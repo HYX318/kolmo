@@ -234,3 +234,38 @@ The visualization tools stream daily CSV files and emit static HTML with inline
 SVG charts, so they avoid browser dashboards and large in-memory DataFrames.
 Reports are generated under the project directory by default; market data stays
 under `KOLMO_DATA_ROOT`.
+
+## Raw Cache Compression
+
+BaoStock raw cache files are useful for replaying the profile build without
+pulling the full history again, but they are not on the hot research path.
+Compress them with gzip:
+
+```bash
+python3 -m kolmo.ashare.compress_raw_cache --source baostock --exchange sz
+```
+
+Future BaoStock downloads write gzip raw cache by default:
+
+```text
+$KOLMO_DATA_ROOT/raw/ashare/baostock/sz/daily/qfq/000001.SZ.csv.gz
+```
+
+The profile builder can resume from either `.csv.gz` or legacy `.csv` cache
+files.
+
+## C++ Tools
+
+High-throughput read-only tools live under `tools/`. Build the raw cache scanner:
+
+```bash
+cmake -S tools/raw_scan -B build/raw_scan
+cmake --build build/raw_scan
+```
+
+Scan raw BaoStock cache:
+
+```bash
+./build/raw_scan/kolmo_raw_scan \
+  /Users/galoishuang/dat/all/raw/ashare/baostock/sz/daily/qfq
+```

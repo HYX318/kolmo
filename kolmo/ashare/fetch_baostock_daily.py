@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import sys
 import time
 from dataclasses import dataclass
@@ -119,6 +120,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=0, help="Optional symbol limit for testing.")
     parser.add_argument("--sleep", type=float, default=0.05, help="Seconds to sleep between symbols.")
     parser.add_argument("--no-combine", action="store_true", help="Only write raw per-symbol files.")
+    parser.add_argument(
+        "--compress-raw",
+        choices=["none", "gzip"],
+        default="gzip",
+        help="Compress per-symbol raw cache files. Default: gzip.",
+    )
     return parser.parse_args()
 
 
@@ -160,6 +167,28 @@ def adjustflag(adjust: str) -> str:
 
 def adjustment_dir_name(adjust: str) -> str:
     return adjust
+
+
+def raw_cache_path(raw_dir: Path, adjust: str, symbol: str, compress_raw: str) -> Path:
+    suffix = ".csv.gz" if compress_raw == "gzip" else ".csv"
+    return raw_dir / adjustment_dir_name(adjust) / f"{symbol}{suffix}"
+
+
+def existing_raw_cache_path(raw_dir: Path, adjust: str, symbol: str) -> Path | None:
+    base = raw_dir / adjustment_dir_name(adjust)
+    gzip_path = base / f"{symbol}.csv.gz"
+    if gzip_path.exists() and gzip_path.stat().st_size > 0:
+        return gzip_path
+    csv_path = base / f"{symbol}.csv"
+    if csv_path.exists() and csv_path.stat().st_size > 0:
+        return csv_path
+    return None
+
+
+def open_text(path: Path, mode: str):
+    if path.suffix == ".gz":
+        return gzip.open(path, mode, encoding="utf-8", newline="")
+    return path.open(mode, encoding="utf-8", newline="")
 
 
 def rows_from_result(result) -> list[list[str]]:
@@ -251,9 +280,11 @@ def write_universe(path: Path, stocks: Iterable[StockInfo]) -> None:
 
 
 def fetch_symbol(bs, stock: StockInfo, args: argparse.Namespace, raw_dir: Path) -> tuple[Path, str]:
-    path = raw_dir / adjustment_dir_name(args.adjust) / f"{stock.symbol}.csv"
-    if args.resume and path.exists() and path.stat().st_size > 0:
-        return path, "cached"
+    if args.resume:
+        existing_path = existing_raw_cache_path(raw_dir, args.adjust, stock.symbol)
+        if existing_path is not None:
+            return existing_path, "cached"
+    path = raw_cache_path(raw_dir, args.adjust, stock.symbol, args.compress_raw)
 
     result = query_or_raise(
         bs.query_history_k_data_plus(
@@ -268,7 +299,7 @@ def fetch_symbol(bs, stock: StockInfo, args: argparse.Namespace, raw_dir: Path) 
     )
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as file:
+    with open_text(path, "wt") as file:
         writer = csv.writer(file, lineterminator="\n")
         writer.writerow(result.fields)
         writer.writerows(rows_from_result(result))
@@ -287,7 +318,7 @@ def append_normalized(
     write_header = not output.exists() or output.stat().st_size == 0
     rows_written = 0
 
-    with raw_path.open("r", encoding="utf-8", newline="") as input_file:
+    with open_text(raw_path, "rt") as input_file:
         reader = csv.DictReader(input_file)
         with output.open("a", encoding="utf-8", newline="") as output_file:
             writer = csv.DictWriter(
