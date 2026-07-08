@@ -20,4 +20,5 @@ kolmo-update-cn-profile = "kolmo.ashare.update_cn_profile_daily:main"
 kolmo-fetch-baostock-daily = "kolmo.ashare.fetch_baostock_daily:main"
 kolmo-partition-daily = "kolmo.ashare.partition_daily_bars_by_date:main"
 kolmo-normalize-daily-profile = "kolmo.ashare.normalize_daily_profile:main"
-
+kolmo-profile-summary = "kolmo.viz.profile_summary:main"
+kolmo-symbol-ohlcv = "kolmo.viz.symbol_ohlcv:main"

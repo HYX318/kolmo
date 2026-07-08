@@ -9,6 +9,7 @@ venv/
 build/
 dist/
 *.egg-info/
+reports/
 
 # Local market data and generated outputs.
 data/raw/*

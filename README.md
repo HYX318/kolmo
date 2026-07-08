@@ -202,3 +202,35 @@ python3 -m kolmo.ashare.normalize_daily_profile \
 - Keep generated market data under `data/`.
 - Keep visualization/report code under `kolmo.viz`.
 - Do not add strategy, backtest, or order-book logic here.
+
+## Visualization
+
+Generate a lightweight market coverage and turnover report from local daily
+profile files:
+
+```bash
+python3 -m kolmo.viz.profile_summary --exchange sz
+```
+
+Default output:
+
+```text
+reports/profile_summary_sz.html
+```
+
+Generate a symbol OHLCV report without loading the full dataset into memory:
+
+```bash
+python3 -m kolmo.viz.symbol_ohlcv --symbol 000001.SZ
+```
+
+Default output:
+
+```text
+reports/symbol_000001_SZ.html
+```
+
+The visualization tools stream daily CSV files and emit static HTML with inline
+SVG charts, so they avoid browser dashboards and large in-memory DataFrames.
+Reports are generated under the project directory by default; market data stays
+under `KOLMO_DATA_ROOT`.
