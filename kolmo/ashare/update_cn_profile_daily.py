@@ -23,7 +23,7 @@ def default_end_date() -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Incrementally update A-share profile_daily/{exchange}/YYYY/MM/YYYYMMDD.csv files. "
+            "Incrementally update A-share profile/daily/{exchange}/YYYY/MM/YYYYMMDD.csv files. "
             "The update starts from the latest local profile date minus a lookback window."
         )
     )
@@ -109,7 +109,7 @@ def run(command: list[str], cwd: Path) -> int:
 
 def update_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
     output_dir = Path(
-        args.output_dir or data_path("clean", "ashare", "profile_daily", exchange)
+        args.output_dir or data_path("profile", "daily", exchange)
     )
     end_date = compact_date(args.end_date)
     latest = latest_profile_date(output_dir)
@@ -127,7 +127,7 @@ def update_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
         data_path("raw", "ashare", "baostock", exchange, "daily_incremental", f"{start_date}_{end_date}")
     )
     combined_output = data_path(
-        "clean",
+        "work",
         "ashare",
         "incremental",
         f"{exchange}_daily_bars_{start_date}_{end_date}_{args.adjust}_baostock.csv",

@@ -49,35 +49,37 @@ kolmo/
     clean/
 ```
 
-`data/raw/` and `data/clean/` are ignored by git.
+Local project `data/raw/` and `data/clean/` are ignored by git, but the normal
+data root is outside the repo.
 
 ## Data Root
 
 All default raw and clean paths are derived from one canonical data root:
 
 ```bash
-export KOLMO_DATA_ROOT=/Users/galoishuang/MarketData/kolmo
+export KOLMO_DATA_ROOT=/Users/galoishuang/dat/all
 ```
 
-If `KOLMO_DATA_ROOT` is not set, Kolmo uses the local project directory:
+If `KOLMO_DATA_ROOT` is not set, Kolmo uses:
 
 ```text
-data/
+/Users/galoishuang/dat/all
 ```
 
 Recommended layout:
 
 ```text
 $KOLMO_DATA_ROOT/
+  profile/
+    daily/
+      sz/YYYY/MM/YYYYMMDD.csv
+      sh/YYYY/MM/YYYYMMDD.csv
   raw/
     ashare/
       baostock/
       akshare/
-  clean/
+  work/
     ashare/
-      profile_daily/
-        sz/YYYY/MM/YYYYMMDD.csv
-        sh/YYYY/MM/YYYYMMDD.csv
 ```
 
 When moving to an external drive, only update the environment variable:
@@ -110,12 +112,12 @@ python3 -m kolmo.ashare.build_cn_profile_daily
 Default output:
 
 ```text
-$KOLMO_DATA_ROOT/clean/ashare/profile_daily/sz/YYYY/MM/YYYYMMDD.csv
-$KOLMO_DATA_ROOT/clean/ashare/profile_daily/sh/YYYY/MM/YYYYMMDD.csv
+$KOLMO_DATA_ROOT/profile/daily/sz/YYYY/MM/YYYYMMDD.csv
+$KOLMO_DATA_ROOT/profile/daily/sh/YYYY/MM/YYYYMMDD.csv
 ```
 
 Each `YYYYMMDD.csv` is a daily cross-section. For example,
-`$KOLMO_DATA_ROOT/clean/ashare/profile_daily/sz/2017/01/20170103.csv` contains all fetched
+`$KOLMO_DATA_ROOT/profile/daily/sz/2017/01/20170103.csv` contains all fetched
 SZSE stocks that traded on 2017-01-03.
 
 Build one exchange only:
@@ -141,7 +143,7 @@ python3 -m kolmo.ashare.update_cn_profile_daily
 ```
 
 The updater finds the latest local file under
-`$KOLMO_DATA_ROOT/clean/ashare/profile_daily/{exchange}/YYYY/MM/`, starts from that date
+`$KOLMO_DATA_ROOT/profile/daily/{exchange}/YYYY/MM/`, starts from that date
 minus 10 calendar days, fetches through today, and overwrites the affected daily
 profile files. The lookback window handles late upstream corrections and cases
 where today's data is not published yet.

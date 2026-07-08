@@ -92,7 +92,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--clean-output",
         default="",
-        help="Combined normalized CSV path. Default is under KOLMO_DATA_ROOT/clean/ashare/.",
+        help="Combined normalized CSV path. Default is under KOLMO_DATA_ROOT/work/ashare/.",
     )
     parser.add_argument(
         "--universe-output",
@@ -344,7 +344,7 @@ def main() -> int:
         clean_output = Path(
             args.clean_output
             or data_path(
-                "clean",
+                "work",
                 "ashare",
                 f"{args.exchange}_daily_bars_{compact_date(start_date)}_{compact_date(end_date)}_{args.adjust}_baostock.csv",
             )

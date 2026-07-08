@@ -24,7 +24,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Fetch real A-share daily bars and store them as "
-            "profile_daily/{exchange}/YYYY/MM/YYYYMMDD.csv files."
+            "profile/daily/{exchange}/YYYY/MM/YYYYMMDD.csv files."
         )
     )
     parser.add_argument(
@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--combined-output",
         default="",
-        help="Intermediate combined CSV path. Defaults under KOLMO_DATA_ROOT/clean/ashare/.",
+        help="Intermediate combined CSV path. Defaults under KOLMO_DATA_ROOT/work/ashare/.",
     )
     parser.add_argument(
         "--raw-dir",
@@ -118,12 +118,12 @@ def run(command: list[str], cwd: Path) -> int:
 def build_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
     start_date = compact_date(args.start_date)
     end_date = compact_date(args.end_date)
-    output_dir = args.output_dir or str(data_path("clean", "ashare", "profile_daily", exchange))
+    output_dir = args.output_dir or str(data_path("profile", "daily", exchange))
     raw_dir = args.raw_dir or str(data_path("raw", "ashare", "baostock", exchange, "daily"))
     combined_output = Path(
         args.combined_output
         or data_path(
-            "clean",
+            "work",
             "ashare",
             f"{exchange}_daily_bars_{start_date}_{end_date}_{args.adjust}_baostock.csv",
         )
