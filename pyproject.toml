@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kolmo"
+version = "0.1.0"
+description = "China market data ingestion, profile generation, and visualization tools."
+requires-python = ">=3.9"
+readme = "README.md"
+dependencies = [
+    "akshare>=1.18.0",
+    "baostock>=0.8.9",
+    "pandas>=2.0.0",
+]
+
+[project.scripts]
+kolmo-build-cn-profile = "kolmo.ashare.build_cn_profile_daily:main"
+kolmo-update-cn-profile = "kolmo.ashare.update_cn_profile_daily:main"
+kolmo-fetch-baostock-daily = "kolmo.ashare.fetch_baostock_daily:main"
+kolmo-partition-daily = "kolmo.ashare.partition_daily_bars_by_date:main"
+kolmo-normalize-daily-profile = "kolmo.ashare.normalize_daily_profile:main"
+
