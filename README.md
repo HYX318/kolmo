@@ -51,6 +51,41 @@ kolmo/
 
 `data/raw/` and `data/clean/` are ignored by git.
 
+## Data Root
+
+All default raw and clean paths are derived from one canonical data root:
+
+```bash
+export KOLMO_DATA_ROOT=/Users/galoishuang/MarketData/kolmo
+```
+
+If `KOLMO_DATA_ROOT` is not set, Kolmo uses the local project directory:
+
+```text
+data/
+```
+
+Recommended layout:
+
+```text
+$KOLMO_DATA_ROOT/
+  raw/
+    ashare/
+      baostock/
+      akshare/
+  clean/
+    ashare/
+      profile_daily/
+        sz/YYYY/MM/YYYYMMDD.csv
+        sh/YYYY/MM/YYYYMMDD.csv
+```
+
+When moving to an external drive, only update the environment variable:
+
+```bash
+export KOLMO_DATA_ROOT=/Volumes/KOLMO_DATA/kolmo
+```
+
 ## Install
 
 ```bash
@@ -75,12 +110,12 @@ python3 -m kolmo.ashare.build_cn_profile_daily
 Default output:
 
 ```text
-data/clean/ashare/profile_daily/sz/YYYY/MM/YYYYMMDD.csv
-data/clean/ashare/profile_daily/sh/YYYY/MM/YYYYMMDD.csv
+$KOLMO_DATA_ROOT/clean/ashare/profile_daily/sz/YYYY/MM/YYYYMMDD.csv
+$KOLMO_DATA_ROOT/clean/ashare/profile_daily/sh/YYYY/MM/YYYYMMDD.csv
 ```
 
 Each `YYYYMMDD.csv` is a daily cross-section. For example,
-`data/clean/ashare/profile_daily/sz/2017/01/20170103.csv` contains all fetched
+`$KOLMO_DATA_ROOT/clean/ashare/profile_daily/sz/2017/01/20170103.csv` contains all fetched
 SZSE stocks that traded on 2017-01-03.
 
 Build one exchange only:
@@ -106,7 +141,7 @@ python3 -m kolmo.ashare.update_cn_profile_daily
 ```
 
 The updater finds the latest local file under
-`data/clean/ashare/profile_daily/{exchange}/YYYY/MM/`, starts from that date
+`$KOLMO_DATA_ROOT/clean/ashare/profile_daily/{exchange}/YYYY/MM/`, starts from that date
 minus 10 calendar days, fetches through today, and overwrites the affected daily
 profile files. The lookback window handles late upstream corrections and cases
 where today's data is not published yet.
@@ -165,4 +200,3 @@ python3 -m kolmo.ashare.normalize_daily_profile \
 - Keep generated market data under `data/`.
 - Keep visualization/report code under `kolmo.viz`.
 - Do not add strategy, backtest, or order-book logic here.
-

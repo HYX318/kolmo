@@ -9,6 +9,8 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from kolmo.paths import data_path
+
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -106,7 +108,9 @@ def run(command: list[str], cwd: Path) -> int:
 
 
 def update_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
-    output_dir = Path(args.output_dir or f"data/clean/ashare/profile_daily/{exchange}")
+    output_dir = Path(
+        args.output_dir or data_path("clean", "ashare", "profile_daily", exchange)
+    )
     end_date = compact_date(args.end_date)
     latest = latest_profile_date(output_dir)
 
@@ -120,12 +124,13 @@ def update_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
     # Incremental raw cache is date-window partitioned. Do not reuse full-run
     # per-symbol cache files whose date coverage may be different.
     raw_dir = (
-        f"data/raw/ashare/baostock/{exchange}/"
-        f"daily_incremental/{start_date}_{end_date}"
+        data_path("raw", "ashare", "baostock", exchange, "daily_incremental", f"{start_date}_{end_date}")
     )
-    combined_output = (
-        f"data/clean/ashare/incremental/"
-        f"{exchange}_daily_bars_{start_date}_{end_date}_{args.adjust}_baostock.csv"
+    combined_output = data_path(
+        "clean",
+        "ashare",
+        "incremental",
+        f"{exchange}_daily_bars_{start_date}_{end_date}_{args.adjust}_baostock.csv",
     )
 
     command = [
@@ -145,7 +150,7 @@ def update_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
         "--combined-output",
         combined_output,
         "--raw-dir",
-        raw_dir,
+        str(raw_dir),
         "--sleep",
         str(args.sleep),
     ]

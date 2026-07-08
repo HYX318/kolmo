@@ -17,6 +17,8 @@ from datetime import date
 from pathlib import Path
 from typing import Iterable
 
+from kolmo.paths import data_path
+
 
 NORMALIZED_COLUMNS = [
     "date",
@@ -73,12 +75,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--clean-output",
         default="",
-        help="Combined normalized CSV path. Default is under data/clean/ashare/.",
+        help="Combined normalized CSV path. Default is under KOLMO_DATA_ROOT/clean/ashare/.",
     )
     parser.add_argument(
         "--universe-output",
         default="",
-        help="Universe CSV path. Default is under data/raw/ashare/akshare/sz/.",
+        help="Universe CSV path. Default is under KOLMO_DATA_ROOT/raw/ashare/akshare/sz/.",
     )
     parser.add_argument(
         "--failures-output",
@@ -323,18 +325,22 @@ def main() -> int:
     ak, pd = require_dependencies()
 
     run_date = today_yyyymmdd()
-    raw_dir = Path(args.raw_dir)
+    raw_dir = Path(args.raw_dir or data_path("raw", "ashare", "akshare", "sz", "daily"))
     clean_output = Path(
         args.clean_output
-        or f"data/clean/ashare/sz_daily_bars_{args.start_date}_{args.end_date}_{adjustment_dir_name(args.adjust)}.csv"
+        or data_path(
+            "clean",
+            "ashare",
+            f"sz_daily_bars_{args.start_date}_{args.end_date}_{adjustment_dir_name(args.adjust)}.csv",
+        )
     )
     universe_output = Path(
         args.universe_output
-        or f"data/raw/ashare/akshare/sz/universe_sz_{run_date}.csv"
+        or data_path("raw", "ashare", "akshare", "sz", f"universe_sz_{run_date}.csv")
     )
     failures_output = Path(
         args.failures_output
-        or f"data/raw/ashare/akshare/sz/failures_sz_daily_{run_date}.csv"
+        or data_path("raw", "ashare", "akshare", "sz", f"failures_sz_daily_{run_date}.csv")
     )
 
     stocks = load_universe(

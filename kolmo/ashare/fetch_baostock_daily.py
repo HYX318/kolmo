@@ -12,6 +12,8 @@ from datetime import date
 from pathlib import Path
 from typing import Iterable
 
+from kolmo.paths import data_path
+
 
 FIELDS = [
     "date",
@@ -90,12 +92,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--clean-output",
         default="",
-        help="Combined normalized CSV path. Default is under data/clean/ashare/.",
+        help="Combined normalized CSV path. Default is under KOLMO_DATA_ROOT/clean/ashare/.",
     )
     parser.add_argument(
         "--universe-output",
         default="",
-        help="Universe CSV path. Default is under data/raw/ashare/baostock/{exchange}/.",
+        help="Universe CSV path. Default is under KOLMO_DATA_ROOT/raw/ashare/baostock/{exchange}/.",
     )
     parser.add_argument(
         "--failures-output",
@@ -336,18 +338,36 @@ def main() -> int:
         run_date = today_yyyymmdd()
         start_date = normalize_date(args.start_date)
         end_date = normalize_date(args.end_date)
-        raw_dir = Path(args.raw_dir or f"data/raw/ashare/baostock/{args.exchange}/daily")
+        raw_dir = Path(
+            args.raw_dir or data_path("raw", "ashare", "baostock", args.exchange, "daily")
+        )
         clean_output = Path(
             args.clean_output
-            or f"data/clean/ashare/{args.exchange}_daily_bars_{compact_date(start_date)}_{compact_date(end_date)}_{args.adjust}_baostock.csv"
+            or data_path(
+                "clean",
+                "ashare",
+                f"{args.exchange}_daily_bars_{compact_date(start_date)}_{compact_date(end_date)}_{args.adjust}_baostock.csv",
+            )
         )
         universe_output = Path(
             args.universe_output
-            or f"data/raw/ashare/baostock/{args.exchange}/universe_{args.exchange}_{run_date}.csv"
+            or data_path(
+                "raw",
+                "ashare",
+                "baostock",
+                args.exchange,
+                f"universe_{args.exchange}_{run_date}.csv",
+            )
         )
         failures_output = Path(
             args.failures_output
-            or f"data/raw/ashare/baostock/{args.exchange}/failures_{args.exchange}_daily_{run_date}.csv"
+            or data_path(
+                "raw",
+                "ashare",
+                "baostock",
+                args.exchange,
+                f"failures_{args.exchange}_daily_{run_date}.csv",
+            )
         )
 
         stocks = load_universe(

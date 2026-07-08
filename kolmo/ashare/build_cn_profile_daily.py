@@ -9,6 +9,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from kolmo.paths import data_path
+
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -51,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--combined-output",
         default="",
-        help="Intermediate combined CSV path. Defaults under data/clean/ashare/.",
+        help="Intermediate combined CSV path. Defaults under KOLMO_DATA_ROOT/clean/ashare/.",
     )
     parser.add_argument(
         "--raw-dir",
@@ -116,11 +118,15 @@ def run(command: list[str], cwd: Path) -> int:
 def build_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
     start_date = compact_date(args.start_date)
     end_date = compact_date(args.end_date)
-    output_dir = args.output_dir or f"data/clean/ashare/profile_daily/{exchange}"
-    raw_dir = args.raw_dir or f"data/raw/ashare/baostock/{exchange}/daily"
+    output_dir = args.output_dir or str(data_path("clean", "ashare", "profile_daily", exchange))
+    raw_dir = args.raw_dir or str(data_path("raw", "ashare", "baostock", exchange, "daily"))
     combined_output = Path(
         args.combined_output
-        or f"data/clean/ashare/{exchange}_daily_bars_{start_date}_{end_date}_{args.adjust}_baostock.csv"
+        or data_path(
+            "clean",
+            "ashare",
+            f"{exchange}_daily_bars_{start_date}_{end_date}_{args.adjust}_baostock.csv",
+        )
     )
 
     fetch_command = [
@@ -177,7 +183,7 @@ def build_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
     if fetch_code != 0:
         print(
             "warning: fetch reported failures; daily profile files were built from available rows. "
-            f"Check data/raw/ashare/baostock/{exchange}/failures_*.csv.",
+            f"Check {data_path('raw', 'ashare', 'baostock', exchange)}/failures_*.csv.",
             file=sys.stderr,
         )
     return fetch_code
