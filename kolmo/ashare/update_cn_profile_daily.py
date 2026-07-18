@@ -148,7 +148,7 @@ def update_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
         "--output-dir",
         str(output_dir),
         "--combined-output",
-        combined_output,
+        str(combined_output),
         "--raw-dir",
         str(raw_dir),
         "--sleep",
