@@ -30,6 +30,12 @@ FIELDS = [
     "turn",
     "tradestatus",
     "pctChg",
+    # 日频估值由 BaoStock 按当时可得的最近报告期（TTM/MRQ）计算；
+    # 保留原始字段，研究层再决定如何处理负 PE 或缺失估值。
+    "peTTM",
+    "pbMRQ",
+    "psTTM",
+    "pcfNcfTTM",
     "isST",
 ]
 
@@ -47,6 +53,10 @@ NORMALIZED_COLUMNS = [
     "amount",
     "turnover_rate",
     "pct_change",
+    "pe_ttm",
+    "pb_mrq",
+    "ps_ttm",
+    "pcf_ncf_ttm",
     "trade_status",
     "is_st",
     "adjust",
@@ -118,6 +128,11 @@ def parse_args() -> argparse.Namespace:
         help="Reuse existing per-symbol raw CSV files.",
     )
     parser.add_argument("--limit", type=int, default=0, help="Optional symbol limit for testing.")
+    parser.add_argument(
+        "--symbol",
+        action="append",
+        help="Optional exact symbol filter, e.g. --symbol 000858.SZ. Can be repeated.",
+    )
     parser.add_argument("--sleep", type=float, default=0.05, help="Seconds to sleep between symbols.")
     parser.add_argument("--no-combine", action="store_true", help="Only write raw per-symbol files.")
     parser.add_argument(
@@ -183,6 +198,16 @@ def existing_raw_cache_path(raw_dir: Path, adjust: str, symbol: str) -> Path | N
     if csv_path.exists() and csv_path.stat().st_size > 0:
         return csv_path
     return None
+
+
+def raw_cache_has_required_fields(path: Path) -> bool:
+    """Old OHLCV caches must be refreshed once to gain valuation columns."""
+    try:
+        with open_text(path, "rt") as file:
+            fields = next(csv.reader(file), [])
+        return set(FIELDS).issubset(fields)
+    except (OSError, UnicodeError):
+        return False
 
 
 def open_text(path: Path, mode: str):
@@ -282,7 +307,7 @@ def write_universe(path: Path, stocks: Iterable[StockInfo]) -> None:
 def fetch_symbol(bs, stock: StockInfo, args: argparse.Namespace, raw_dir: Path) -> tuple[Path, str]:
     if args.resume:
         existing_path = existing_raw_cache_path(raw_dir, args.adjust, stock.symbol)
-        if existing_path is not None:
+        if existing_path is not None and raw_cache_has_required_fields(existing_path):
             return existing_path, "cached"
     path = raw_cache_path(raw_dir, args.adjust, stock.symbol, args.compress_raw)
 
@@ -345,6 +370,10 @@ def append_normalized(
                         "amount": row.get("amount", ""),
                         "turnover_rate": row.get("turn", ""),
                         "pct_change": row.get("pctChg", ""),
+                        "pe_ttm": row.get("peTTM", ""),
+                        "pb_mrq": row.get("pbMRQ", ""),
+                        "ps_ttm": row.get("psTTM", ""),
+                        "pcf_ncf_ttm": row.get("pcfNcfTTM", ""),
                         "trade_status": row.get("tradestatus", ""),
                         "is_st": row.get("isST", ""),
                         "adjust": adjust,
@@ -408,6 +437,12 @@ def main() -> int:
             include_delisted=args.include_delisted,
             exchange=args.exchange,
         )
+        symbols = {symbol.upper() for symbol in args.symbol or []}
+        if symbols:
+            stocks = [stock for stock in stocks if stock.symbol in symbols]
+            missing = symbols - {stock.symbol for stock in stocks}
+            if missing:
+                raise ValueError(f"symbols are not in the {args.exchange} universe: {sorted(missing)}")
         if args.limit > 0:
             stocks = stocks[: args.limit]
         write_universe(universe_output, stocks)

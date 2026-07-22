@@ -142,6 +142,28 @@ After the first full build:
 python3 -m kolmo.ashare.update_cn_profile_daily
 ```
 
+By default this updates both outputs: date-partitioned profile files and the
+canonical per-symbol gzip raw caches. Select one output when needed:
+
+```bash
+# Only rebuild profile/daily/{exchange}/YYYY/MM/YYYYMMDD.csv.
+python3 -m kolmo.ashare.update_cn_profile_daily --target profile
+
+# Only merge the latest existing per-symbol raw cache window; this does not
+# fetch again after a profile update.
+python3 -m kolmo.ashare.update_cn_profile_daily --target raw --exchange sz --workers 4
+
+# Fetch a fresh window, then merge only per-symbol raw caches.
+python3 -m kolmo.ashare.update_cn_profile_daily --target raw --refresh-raw --exchange sz --workers 4
+
+# Explicitly update both outputs (the default).
+python3 -m kolmo.ashare.update_cn_profile_daily --target all --workers 4
+```
+
+The raw-cache merge uses independent workers per symbol. Start with four
+workers on a laptop; fetching from BaoStock remains serialized to avoid
+rate-limit and session-safety issues.
+
 The updater finds the latest local file under
 `$KOLMO_DATA_ROOT/profile/daily/{exchange}/YYYY/MM/`, starts from that date
 minus 10 calendar days, fetches through today, and overwrites the affected daily
@@ -171,6 +193,23 @@ python3 -m kolmo.ashare.fetch_baostock_daily \
   --start-date 20170101 \
   --end-date 20260708 \
   --adjust qfq
+```
+
+BaoStock raw daily caches also retain historical valuation fields:
+
+```text
+peTTM, pbMRQ, psTTM, pcfNcfTTM
+```
+
+Existing OHLCV-only caches are detected as stale and refreshed automatically
+when fetched again with `--resume`. To refresh one stock without rebuilding
+profile files:
+
+```bash
+python3 -m kolmo.ashare.fetch_baostock_daily \
+  --exchange sz --symbol 000858.SZ \
+  --start-date 20170101 --end-date 20260722 \
+  --adjust qfq --no-combine
 ```
 
 AKShare support is currently kept as a secondary source:
@@ -204,6 +243,16 @@ python3 -m kolmo.ashare.normalize_daily_profile \
 - Do not add strategy, backtest, or order-book logic here.
 
 ## Visualization
+
+For the interactive local terminal (K-line plus daily market cross-section):
+
+```bash
+python3 -m kolmo.viz.market_terminal
+```
+
+Then open `http://127.0.0.1:8765`. It loads exactly one symbol history or one
+daily cross-section on demand from `$KOLMO_DATA_ROOT`; it never copies raw data
+into the repository.
 
 Generate a lightweight market coverage and turnover report from local daily
 profile files:
