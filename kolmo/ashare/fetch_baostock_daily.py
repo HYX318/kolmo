@@ -134,6 +134,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional exact symbol filter, e.g. --symbol 000858.SZ. Can be repeated.",
     )
     parser.add_argument("--sleep", type=float, default=0.05, help="Seconds to sleep between symbols.")
+    parser.add_argument(
+        "--max-rows-per-symbol",
+        type=int,
+        default=10_000,
+        help="Abort one malformed BaoStock result after this many rows and continue. Default: 10000.",
+    )
     parser.add_argument("--no-combine", action="store_true", help="Only write raw per-symbol files.")
     parser.add_argument(
         "--compress-raw",
@@ -216,9 +222,13 @@ def open_text(path: Path, mode: str):
     return path.open(mode, encoding="utf-8", newline="")
 
 
-def rows_from_result(result) -> list[list[str]]:
+def rows_from_result(result, max_rows: int = 0) -> list[list[str]]:
     rows: list[list[str]] = []
     while result.next():
+        if max_rows > 0 and len(rows) >= max_rows:
+            raise RuntimeError(
+                f"BaoStock result exceeded {max_rows} rows; aborting this symbol to avoid an infinite iterator"
+            )
         rows.append(result.get_row_data())
     return rows
 
@@ -327,7 +337,7 @@ def fetch_symbol(bs, stock: StockInfo, args: argparse.Namespace, raw_dir: Path) 
     with open_text(path, "wt") as file:
         writer = csv.writer(file, lineterminator="\n")
         writer.writerow(result.fields)
-        writer.writerows(rows_from_result(result))
+        writer.writerows(rows_from_result(result, args.max_rows_per_symbol))
 
     return path, "fetched"
 

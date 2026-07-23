@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from kolmo.ashare import update_cn_profile_daily
+from kolmo.ashare.fetch_baostock_daily import rows_from_result
 from kolmo.ashare.update_cn_profile_daily import merge_raw_cache
 
 
@@ -90,3 +91,16 @@ class MergeRawCacheTest(unittest.TestCase):
             self.assertIn("kolmo.ashare.fetch_baostock_daily", command)
             self.assertIn("--no-combine", command)
             self.assertNotIn("kolmo.ashare.build_cn_profile_daily", command)
+
+
+class RowsFromResultTest(unittest.TestCase):
+    def test_row_limit_stops_malformed_unbounded_result(self) -> None:
+        class EndlessResult:
+            def next(self) -> bool:
+                return True
+
+            def get_row_data(self) -> list[str]:
+                return ["repeat"]
+
+        with self.assertRaisesRegex(RuntimeError, "exceeded 3 rows"):
+            rows_from_result(EndlessResult(), max_rows=3)
