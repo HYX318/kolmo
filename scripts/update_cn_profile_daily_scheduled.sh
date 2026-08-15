@@ -48,15 +48,17 @@ trap 'rm -f "$lock_dir/pid" "$lock_dir/started_at"; rmdir "$lock_dir"' EXIT
         --days 20 \
         --json-output "$KOLMO_DATA_ROOT/logs/kolmo/profile_health_latest.json" \
         --csv-output "$KOLMO_DATA_ROOT/logs/kolmo/profile_health_latest.csv" || health_status=$?
+    reference_status=0
+    python3 -m kolmo.reference.security_master --as-of-date "$(date '+%Y%m%d')" || reference_status=$?
     snapshot_status=0
-    if [[ "$update_status" -eq 0 && "$health_status" -eq 0 ]]; then
+    if [[ "$update_status" -eq 0 && "$health_status" -eq 0 && "$reference_status" -eq 0 ]]; then
         python3 -m kolmo.catalog.profile_snapshot publish --latest-days 80 || snapshot_status=$?
     else
         snapshot_status=2
     fi
-    printf '{"event":"scheduled_update_finished","time":"%s","update_status":%s,"health_status":%s,"snapshot_status":%s}\n' \
-        "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$update_status" "$health_status" "$snapshot_status"
-    if [[ "$update_status" -ne 0 || "$health_status" -ne 0 ]]; then
+    printf '{"event":"scheduled_update_finished","time":"%s","update_status":%s,"health_status":%s,"reference_status":%s,"snapshot_status":%s}\n' \
+        "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$update_status" "$health_status" "$reference_status" "$snapshot_status"
+    if [[ "$update_status" -ne 0 || "$health_status" -ne 0 || "$reference_status" -ne 0 ]]; then
         exit 1
     fi
     if [[ "$snapshot_status" -ne 0 ]]; then

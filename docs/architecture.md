@@ -24,6 +24,7 @@ Allowed:
 - schema enrichment such as `board`
 - data-quality and visualization reports
 - scheduled updates
+- versioned reference products such as calendars and security-master observations
 
 Not allowed:
 
@@ -88,6 +89,20 @@ amount
 pct_change
 source
 ```
+
+Reference products are versioned separately from daily profiles:
+
+```text
+$KOLMO_DATA_ROOT/reference/ashare/trading_calendar/YYYY.csv
+$KOLMO_DATA_ROOT/reference/ashare/security_master/observed/YYYY/MM/YYYYMMDD.csv
+```
+
+The current calendar is a BaoStock observation. The security master is an
+observed BaoStock basic-information snapshot with listing/delisting dates and a
+base board limit rule. It explicitly does not claim date-effective ST status,
+IPO exception windows, corporate-action adjustments, or a production price-limit
+decision. Those fields remain required before live-trading or production-grade
+execution claims.
 
 ## Board Classification
 
