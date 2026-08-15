@@ -6,10 +6,15 @@ from __future__ import annotations
 import argparse
 import csv
 import gzip
+import hashlib
+import json
+import os
 import sys
+import tempfile
 import time
+import uuid
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -115,7 +120,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--failures-output",
         default="",
-        help="Failure manifest path. Default is beside the universe CSV.",
+        help="Failure manifest path. Default is a run-scoped file beside the universe CSV.",
+    )
+    parser.add_argument(
+        "--evidence-output",
+        default="",
+        help="Completed fetch-evidence JSON path. Default is a run-scoped file beside the universe CSV.",
+    )
+    parser.add_argument(
+        "--run-id",
+        default="",
+        help="Optional immutable identifier for this fetch run. Defaults to a UUID.",
     )
     parser.add_argument(
         "--include-delisted",
@@ -178,6 +193,44 @@ def compact_date(value: str) -> str:
 
 def today_yyyymmdd() -> str:
     return date.today().strftime("%Y%m%d")
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def write_atomic_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as output:
+            json.dump(payload, output, ensure_ascii=True, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def failure_temp_path(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    os.close(descriptor)
+    return Path(temporary_name)
 
 
 def adjustflag(adjust: str) -> str:
@@ -402,18 +455,53 @@ def main() -> int:
     args = parse_args()
     bs = require_dependencies()
 
+    run_id = args.run_id.strip() or uuid.uuid4().hex
+    start_date = normalize_date(args.start_date)
+    end_date = normalize_date(args.end_date)
+    raw_dir = Path(
+        args.raw_dir or data_path("raw", "ashare", "baostock", args.exchange, "daily")
+    )
+    evidence_output = Path(
+        args.evidence_output
+        or data_path(
+            "raw", "ashare", "baostock", args.exchange, "runs", f"fetch_{args.exchange}_{run_id}.json"
+        )
+    )
+    failures_output = Path(
+        args.failures_output
+        or data_path(
+            "raw", "ashare", "baostock", args.exchange, "runs", f"failures_{args.exchange}_{run_id}.csv"
+        )
+    )
+    started_at = utc_now()
+    evidence = {
+        "schema_version": "1.0.0",
+        "product_id": "baostock_daily_fetch",
+        "run_id": run_id,
+        "exchange": args.exchange,
+        "start_date": compact_date(start_date),
+        "end_date": compact_date(end_date),
+        "adjust": args.adjust,
+        "status": "running",
+        "started_at": started_at,
+        "completed_at": None,
+        "failure_manifest_path": str(failures_output.resolve()),
+        "failure_manifest_sha256": None,
+        "symbols": {"total": 0, "fetched": 0, "cached": 0, "failed": 0},
+        "rows": 0,
+    }
+    write_atomic_json(evidence_output, evidence)
+
     login = bs.login()
     if login.error_code != "0":
+        evidence["status"] = "login_failed"
+        evidence["completed_at"] = utc_now()
+        evidence["error"] = f"{login.error_code} {login.error_msg}"
+        write_atomic_json(evidence_output, evidence)
         print(f"baostock login failed: {login.error_code} {login.error_msg}", file=sys.stderr)
         return 2
 
     try:
-        run_date = today_yyyymmdd()
-        start_date = normalize_date(args.start_date)
-        end_date = normalize_date(args.end_date)
-        raw_dir = Path(
-            args.raw_dir or data_path("raw", "ashare", "baostock", args.exchange, "daily")
-        )
         clean_output = Path(
             args.clean_output
             or data_path(
@@ -429,17 +517,7 @@ def main() -> int:
                 "ashare",
                 "baostock",
                 args.exchange,
-                f"universe_{args.exchange}_{run_date}.csv",
-            )
-        )
-        failures_output = Path(
-            args.failures_output
-            or data_path(
-                "raw",
-                "ashare",
-                "baostock",
-                args.exchange,
-                f"failures_{args.exchange}_daily_{run_date}.csv",
+                f"universe_{args.exchange}_{run_id}.csv",
             )
         )
 
@@ -463,50 +541,73 @@ def main() -> int:
         if clean_output.exists() and not args.no_combine:
             clean_output.unlink()
 
-        failures_output.parent.mkdir(parents=True, exist_ok=True)
         fetched = 0
         cached = 0
         failed = 0
         total_rows = 0
+        temporary_failures = failure_temp_path(failures_output)
 
-        with failures_output.open("w", encoding="utf-8", newline="") as failure_file:
-            failure_writer = csv.DictWriter(
-                failure_file,
-                fieldnames=["symbol", "status", "error"],
-                lineterminator="\n",
-            )
-            failure_writer.writeheader()
+        try:
+            with temporary_failures.open("w", encoding="utf-8", newline="") as failure_file:
+                failure_writer = csv.DictWriter(
+                    failure_file,
+                    fieldnames=["symbol", "status", "error"],
+                    lineterminator="\n",
+                )
+                failure_writer.writeheader()
 
-            for index, stock in enumerate(stocks, start=1):
-                try:
-                    raw_path, source_state = fetch_symbol(bs, stock, args, raw_dir)
-                    fetched += 1 if source_state == "fetched" else 0
-                    cached += 1 if source_state == "cached" else 0
-                    rows = 0
-                    if not args.no_combine:
-                        rows = append_normalized(
-                            clean_output, raw_path, stock, args.adjust, args.exchange
+                for index, stock in enumerate(stocks, start=1):
+                    try:
+                        raw_path, source_state = fetch_symbol(bs, stock, args, raw_dir)
+                        fetched += 1 if source_state == "fetched" else 0
+                        cached += 1 if source_state == "cached" else 0
+                        rows = 0
+                        if not args.no_combine:
+                            rows = append_normalized(
+                                clean_output, raw_path, stock, args.adjust, args.exchange
+                            )
+                            total_rows += rows
+
+                        print(
+                            f"[{index}/{len(stocks)}] {stock.symbol} {source_state} rows={rows}",
+                            flush=True,
                         )
-                        total_rows += rows
+                    except Exception as exc:
+                        failed += 1
+                        failure_writer.writerow(
+                            {"symbol": stock.symbol, "status": stock.status, "error": repr(exc)}
+                        )
+                        print(f"[{index}/{len(stocks)}] {stock.symbol} failed: {exc}", file=sys.stderr)
 
-                    print(
-                        f"[{index}/{len(stocks)}] {stock.symbol} {source_state} rows={rows}",
-                        flush=True,
-                    )
-                except Exception as exc:
-                    failed += 1
-                    failure_writer.writerow(
-                        {"symbol": stock.symbol, "status": stock.status, "error": repr(exc)}
-                    )
-                    print(f"[{index}/{len(stocks)}] {stock.symbol} failed: {exc}", file=sys.stderr)
+                    if args.sleep > 0:
+                        time.sleep(args.sleep)
+                failure_file.flush()
+                os.fsync(failure_file.fileno())
+            os.replace(temporary_failures, failures_output)
+        finally:
+            temporary_failures.unlink(missing_ok=True)
 
-                if args.sleep > 0:
-                    time.sleep(args.sleep)
+        evidence.update(
+            {
+                "status": "completed" if failed == 0 else "completed_with_failures",
+                "completed_at": utc_now(),
+                "failure_manifest_sha256": sha256_file(failures_output),
+                "symbols": {
+                    "total": len(stocks),
+                    "fetched": fetched,
+                    "cached": cached,
+                    "failed": failed,
+                },
+                "rows": total_rows,
+            }
+        )
+        write_atomic_json(evidence_output, evidence)
 
         print(
             "done "
             f"symbols={len(stocks)} fetched={fetched} cached={cached} failed={failed} "
             f"rows={total_rows} universe={universe_output} failures={failures_output} "
+            f"evidence={evidence_output} "
             f"clean={'' if args.no_combine else clean_output}"
         )
         return 0 if failed == 0 else 1

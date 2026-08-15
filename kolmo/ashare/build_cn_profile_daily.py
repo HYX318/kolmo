@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import uuid
 from datetime import date
 from pathlib import Path
 
@@ -102,6 +103,11 @@ def parse_args() -> argparse.Namespace:
             "symbols fail. Disabled by default so production partitions remain unchanged."
         ),
     )
+    parser.add_argument(
+        "--run-id",
+        default="",
+        help="Optional immutable fetch run identifier. Defaults to a UUID per exchange build.",
+    )
     return parser.parse_args()
 
 
@@ -131,6 +137,13 @@ def build_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
             f"{exchange}_daily_bars_{start_date}_{end_date}_{args.adjust}_baostock.csv",
         )
     )
+    run_id = args.run_id.strip() or uuid.uuid4().hex
+    evidence_output = data_path(
+        "raw", "ashare", "baostock", exchange, "runs", f"fetch_{exchange}_{run_id}.json"
+    )
+    failures_output = data_path(
+        "raw", "ashare", "baostock", exchange, "runs", f"failures_{exchange}_{run_id}.csv"
+    )
 
     fetch_command = [
         sys.executable,
@@ -146,6 +159,12 @@ def build_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
         args.adjust,
         "--raw-dir",
         raw_dir,
+        "--run-id",
+        run_id,
+        "--evidence-output",
+        str(evidence_output),
+        "--failures-output",
+        str(failures_output),
         "--clean-output",
         str(combined_output),
         "--sleep",
@@ -178,6 +197,8 @@ def build_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
         args.extension,
         "--delimiter",
         args.delimiter,
+        "--fetch-evidence",
+        str(evidence_output),
     ]
     partition_code = run(partition_command, root)
     if partition_code != 0:

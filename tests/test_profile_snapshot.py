@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import io
 import json
 import os
@@ -116,6 +117,85 @@ def write_failure_manifest(
     return path
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def write_fetch_evidence(
+    catalog: ProfileSnapshotCatalog,
+    trade_date: str,
+    exchange: str,
+    *,
+    failed: bool = False,
+) -> Path:
+    run_root = catalog.data_root / "raw" / "ashare" / "baostock" / exchange / "runs"
+    run_root.mkdir(parents=True, exist_ok=True)
+    failure_path = run_root / f"failures_{exchange}_test.csv"
+    failure_path.write_text(
+        "symbol,status,error\n" + ("000001.SZ,active,timeout\n" if failed else ""),
+        encoding="utf-8",
+    )
+    evidence_path = run_root / f"fetch_{exchange}_test.json"
+    evidence_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0.0",
+                "product_id": "baostock_daily_fetch",
+                "run_id": f"{exchange}-test",
+                "exchange": exchange,
+                "start_date": trade_date,
+                "end_date": trade_date,
+                "status": "completed_with_failures" if failed else "completed",
+                "failure_manifest_path": str(failure_path),
+                "failure_manifest_sha256": sha256_file(failure_path),
+                "symbols": {"total": 1, "fetched": 1, "cached": 0, "failed": int(failed)},
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return evidence_path
+
+
+def write_partition_provenance(
+    catalog: ProfileSnapshotCatalog,
+    trade_date: str,
+    exchange: str,
+    evidence_path: Path,
+) -> Path:
+    profile_path = catalog.profile_path(exchange, trade_date)
+    path = profile_path.with_name(f"{profile_path.name}.provenance.json")
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0.0",
+                "product_id": "profile_daily_partition_provenance",
+                "date": trade_date,
+                "exchange": exchange,
+                "profile_path": str(profile_path.resolve()),
+                "profile_sha256": sha256_file(profile_path),
+                "fetch_evidence_path": str(evidence_path.resolve()),
+                "fetch_evidence_sha256": sha256_file(evidence_path),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def bind_day_to_fetch(
+    catalog: ProfileSnapshotCatalog, trade_date: str, *, failed: bool = False
+) -> None:
+    for exchange in ("sz", "sh"):
+        evidence_path = write_fetch_evidence(catalog, trade_date, exchange, failed=failed)
+        write_partition_provenance(catalog, trade_date, exchange, evidence_path)
+
+
 class ProfileSnapshotCatalogTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = TemporaryDirectory()
@@ -209,13 +289,13 @@ class ProfileSnapshotCatalogTest(unittest.TestCase):
             self.catalog.publish(dates=["20260811"])
         self.assertEqual(self.catalog.resolve_current(), original_id)
 
-    def test_failure_manifest_with_rows_blocks_and_keeps_current(self) -> None:
+    def test_failed_fetch_evidence_blocks_and_keeps_current(self) -> None:
         write_day(self.catalog, "20260810")
         original_id = str(self.catalog.publish(dates=["20260810"])["snapshot_id"])
         write_day(self.catalog, "20260811")
-        write_failure_manifest(self.catalog, "20260811", "sh", failed=True)
+        bind_day_to_fetch(self.catalog, "20260811", failed=True)
 
-        with self.assertRaisesRegex(ProfileSnapshotError, "failure manifest has 1 data rows"):
+        with self.assertRaisesRegex(ProfileSnapshotError, "not a completed zero-failure run"):
             self.catalog.publish(latest_days=1)
         self.assertEqual(self.catalog.resolve_current(), original_id)
 
@@ -236,10 +316,9 @@ class ProfileSnapshotCatalogTest(unittest.TestCase):
         with self.assertRaisesRegex(ProfileSnapshotError, "not contiguous"):
             self.catalog.publish(dates=["20260810", "20260812"])
 
-    def test_existing_empty_failure_manifest_is_pass_evidence(self) -> None:
+    def test_completed_fetch_evidence_is_pass_evidence(self) -> None:
         write_day(self.catalog, "20260810")
-        for exchange in ("sz", "sh"):
-            write_failure_manifest(self.catalog, "20260810", exchange, failed=False)
+        bind_day_to_fetch(self.catalog, "20260810")
 
         manifest = self.catalog.publish(dates=["20260810"])
 
@@ -250,18 +329,25 @@ class ProfileSnapshotCatalogTest(unittest.TestCase):
         self.assertEqual(len(results), 2)
         self.assertTrue(all(item["level"] == "PASS" for item in results))
 
-    def test_malformed_failure_manifest_is_blocked(self) -> None:
+    def test_malformed_partition_provenance_is_blocked(self) -> None:
         write_day(self.catalog, "20260810")
-        path = write_failure_manifest(self.catalog, "20260810", "sz", failed=False)
-        path.write_text("symbol,error\n", encoding="utf-8")
+        path = self.catalog.profile_path("sz", "20260810").with_name("20260810.csv.provenance.json")
+        path.write_text("{}\n", encoding="utf-8")
 
-        with self.assertRaisesRegex(ProfileSnapshotError, "failure manifest schema"):
+        with self.assertRaisesRegex(ProfileSnapshotError, "provenance schema"):
             self.catalog.publish(dates=["20260810"])
 
-    def test_zero_byte_failure_manifest_is_missing_evidence(self) -> None:
+    def test_zero_byte_provenance_is_missing_evidence(self) -> None:
         write_day(self.catalog, "20260810")
-        path = write_failure_manifest(self.catalog, "20260810", "sz", failed=False)
+        path = self.catalog.profile_path("sz", "20260810").with_name("20260810.csv.provenance.json")
         path.write_bytes(b"")
+
+        with self.assertRaisesRegex(ProfileSnapshotError, "cannot read profile provenance"):
+            self.catalog.publish(dates=["20260810"])
+
+    def test_legacy_failure_manifest_does_not_block_new_snapshot_contract(self) -> None:
+        write_day(self.catalog, "20260810")
+        write_failure_manifest(self.catalog, "20260810", "sz", failed=True)
 
         manifest = self.catalog.publish(dates=["20260810"])
 

@@ -195,7 +195,7 @@ The health check validates:
 - row count versus recent exchange median
 - duplicate symbols
 - non-positive OHLC values
-- BaoStock failure manifests for the same trade date
+- bound BaoStock fetch-run completion and failure evidence, where provenance is available
 
 By default this updates both outputs: date-partitioned profile files and the
 canonical per-symbol gzip raw caches. Select one output when needed:
@@ -249,10 +249,13 @@ python3 -m kolmo.catalog.profile_snapshot publish --latest-days 20
 The command validates the exact profile schema, non-empty CSVs, unique symbols,
 row date/exchange/symbol consistency, and finite market prices. `preclose` must
 always be positive; tradable rows must have positive OHLC, while suspended rows
-may retain zero OHLC under the ProfileStore contract. It also checks
-`raw/ashare/baostock/{exchange}/failures_{exchange}_daily_{date}.csv`; any data
-row in a selected date's failure manifest blocks publication. `CURRENT` is
-updated only after every selected partition passes.
+may retain zero OHLC under the ProfileStore contract. Newly rebuilt partitions
+also carry `<date>.csv.provenance.json`, which binds the partition hash to a
+run-scoped BaoStock fetch evidence file. Publication requires the bound run to
+be complete with zero failed symbols. Legacy partitions without provenance are
+explicitly marked `RESEARCH_ONLY`; old `failures_*_daily_*` files remain audit
+records and are not interpreted as date-level proof. `CURRENT` is updated only
+after every selected partition passes its blocking checks.
 
 Published metadata and immutable content objects are stored at:
 
@@ -317,7 +320,9 @@ The intended scheduled sequence is `update -> health check -> snapshot
 publish -> snapshot verify`. Failed publication leaves the previous `CURRENT`
 unchanged. Existing manifests are immutable; publishing the same content is
 idempotent, while corrected source partitions produce a new snapshot ID and
-retain the old snapshot.
+retain the old snapshot. An interrupted fetch leaves a `running` run-evidence
+record and does not atomically replace its failure manifest, so it cannot be
+mistaken for a zero-failure update.
 
 `scripts/update_cn_profile_daily_scheduled.sh` 已接入该顺序：交易日更新和最近 20 日
 健康检查均通过后，自动发布最近 80 个完整交易日，满足 MA60 特征预热。任一步失败都会
