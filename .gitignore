@@ -11,6 +11,9 @@ dist/
 *.egg-info/
 reports/
 
+# Vendor-supplied Tonghuashun SDK binaries and local configuration.
+third_party/ths/
+
 # Local market data and generated outputs.
 data/raw/*
 data/clean/*

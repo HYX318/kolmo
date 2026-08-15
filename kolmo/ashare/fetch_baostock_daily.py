@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 from typing import Iterable
 
+from kolmo.ashare.board_rules import board_for_symbol
 from kolmo.paths import data_path
 
 
@@ -30,6 +31,12 @@ FIELDS = [
     "turn",
     "tradestatus",
     "pctChg",
+    # 日频估值由 BaoStock 按当时可得的最近报告期（TTM/MRQ）计算；
+    # 保留原始字段，研究层再决定如何处理负 PE 或缺失估值。
+    "peTTM",
+    "pbMRQ",
+    "psTTM",
+    "pcfNcfTTM",
     "isST",
 ]
 
@@ -37,6 +44,7 @@ NORMALIZED_COLUMNS = [
     "date",
     "symbol",
     "exchange",
+    "board",
     "open",
     "high",
     "low",
@@ -47,6 +55,10 @@ NORMALIZED_COLUMNS = [
     "amount",
     "turnover_rate",
     "pct_change",
+    "pe_ttm",
+    "pb_mrq",
+    "ps_ttm",
+    "pcf_ncf_ttm",
     "trade_status",
     "is_st",
     "adjust",
@@ -118,7 +130,18 @@ def parse_args() -> argparse.Namespace:
         help="Reuse existing per-symbol raw CSV files.",
     )
     parser.add_argument("--limit", type=int, default=0, help="Optional symbol limit for testing.")
+    parser.add_argument(
+        "--symbol",
+        action="append",
+        help="Optional exact symbol filter, e.g. --symbol 000858.SZ. Can be repeated.",
+    )
     parser.add_argument("--sleep", type=float, default=0.05, help="Seconds to sleep between symbols.")
+    parser.add_argument(
+        "--max-rows-per-symbol",
+        type=int,
+        default=10_000,
+        help="Abort one malformed BaoStock result after this many rows and continue. Default: 10000.",
+    )
     parser.add_argument("--no-combine", action="store_true", help="Only write raw per-symbol files.")
     parser.add_argument(
         "--compress-raw",
@@ -185,15 +208,29 @@ def existing_raw_cache_path(raw_dir: Path, adjust: str, symbol: str) -> Path | N
     return None
 
 
+def raw_cache_has_required_fields(path: Path) -> bool:
+    """Old OHLCV caches must be refreshed once to gain valuation columns."""
+    try:
+        with open_text(path, "rt") as file:
+            fields = next(csv.reader(file), [])
+        return set(FIELDS).issubset(fields)
+    except (OSError, UnicodeError):
+        return False
+
+
 def open_text(path: Path, mode: str):
     if path.suffix == ".gz":
         return gzip.open(path, mode, encoding="utf-8", newline="")
     return path.open(mode, encoding="utf-8", newline="")
 
 
-def rows_from_result(result) -> list[list[str]]:
+def rows_from_result(result, max_rows: int = 0) -> list[list[str]]:
     rows: list[list[str]] = []
     while result.next():
+        if max_rows > 0 and len(rows) >= max_rows:
+            raise RuntimeError(
+                f"BaoStock result exceeded {max_rows} rows; aborting this symbol to avoid an infinite iterator"
+            )
         rows.append(result.get_row_data())
     return rows
 
@@ -282,7 +319,7 @@ def write_universe(path: Path, stocks: Iterable[StockInfo]) -> None:
 def fetch_symbol(bs, stock: StockInfo, args: argparse.Namespace, raw_dir: Path) -> tuple[Path, str]:
     if args.resume:
         existing_path = existing_raw_cache_path(raw_dir, args.adjust, stock.symbol)
-        if existing_path is not None:
+        if existing_path is not None and raw_cache_has_required_fields(existing_path):
             return existing_path, "cached"
     path = raw_cache_path(raw_dir, args.adjust, stock.symbol, args.compress_raw)
 
@@ -302,7 +339,7 @@ def fetch_symbol(bs, stock: StockInfo, args: argparse.Namespace, raw_dir: Path) 
     with open_text(path, "wt") as file:
         writer = csv.writer(file, lineterminator="\n")
         writer.writerow(result.fields)
-        writer.writerows(rows_from_result(result))
+        writer.writerows(rows_from_result(result, args.max_rows_per_symbol))
 
     return path, "fetched"
 
@@ -335,6 +372,7 @@ def append_normalized(
                         "date": compact_date(row.get("date", "")),
                         "symbol": stock.symbol,
                         "exchange": exchange_suffix(exchange),
+                        "board": board_for_symbol(stock.symbol),
                         "open": row.get("open", ""),
                         "high": row.get("high", ""),
                         "low": row.get("low", ""),
@@ -345,6 +383,10 @@ def append_normalized(
                         "amount": row.get("amount", ""),
                         "turnover_rate": row.get("turn", ""),
                         "pct_change": row.get("pctChg", ""),
+                        "pe_ttm": row.get("peTTM", ""),
+                        "pb_mrq": row.get("pbMRQ", ""),
+                        "ps_ttm": row.get("psTTM", ""),
+                        "pcf_ncf_ttm": row.get("pcfNcfTTM", ""),
                         "trade_status": row.get("tradestatus", ""),
                         "is_st": row.get("isST", ""),
                         "adjust": adjust,
@@ -408,6 +450,12 @@ def main() -> int:
             include_delisted=args.include_delisted,
             exchange=args.exchange,
         )
+        symbols = {symbol.upper() for symbol in args.symbol or []}
+        if symbols:
+            stocks = [stock for stock in stocks if stock.symbol in symbols]
+            missing = symbols - {stock.symbol for stock in stocks}
+            if missing:
+                raise ValueError(f"symbols are not in the {args.exchange} universe: {sorted(missing)}")
         if args.limit > 0:
             stocks = stocks[: args.limit]
         write_universe(universe_output, stocks)

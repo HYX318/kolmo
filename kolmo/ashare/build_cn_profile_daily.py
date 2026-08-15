@@ -96,8 +96,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--partition-on-fetch-failure",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Still partition existing combined rows when some symbols fail.",
+        default=False,
+        help=(
+            "Explicit recovery override: partition partial combined rows even when some "
+            "symbols fail. Disabled by default so production partitions remain unchanged."
+        ),
     )
     return parser.parse_args()
 
