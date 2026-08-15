@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
+import tempfile
 from collections import OrderedDict
 from pathlib import Path
 
@@ -78,7 +80,7 @@ def main() -> int:
         print(f"input does not exist: {input_path}", file=sys.stderr)
         return 1
 
-    writers: OrderedDict[str, tuple[object, csv.DictWriter]] = OrderedDict()
+    writers: OrderedDict[str, tuple[object, csv.DictWriter, Path, Path]] = OrderedDict()
     rows = 0
 
     try:
@@ -95,28 +97,45 @@ def main() -> int:
                 trade_date = normalize_date(row[args.date_column])
                 writer_entry = writers.get(trade_date)
                 if writer_entry is None:
-                    mode = "w" if args.overwrite else "a"
                     output_path = output_path_for_date(
                         output_dir, trade_date, args.extension, args.layout
                     )
                     output_path.parent.mkdir(parents=True, exist_ok=True)
-                    file = output_path.open(mode, encoding="utf-8", newline="")
+                    if not args.overwrite:
+                        raise ValueError(
+                            "non-atomic append mode is not supported for date partitions; "
+                            "rerun with --overwrite"
+                        )
+                    descriptor, temporary_name = tempfile.mkstemp(
+                        prefix=f".{output_path.name}.",
+                        suffix=".tmp",
+                        dir=output_path.parent,
+                    )
+                    os.close(descriptor)
+                    temporary_path = Path(temporary_name)
+                    file = temporary_path.open("w", encoding="utf-8", newline="")
                     writer = csv.DictWriter(
                         file,
                         fieldnames=reader.fieldnames,
                         delimiter=delimiter,
                         lineterminator="\n",
                     )
-                    if args.overwrite or output_path.stat().st_size == 0:
-                        writer.writeheader()
-                    writer_entry = (file, writer)
+                    writer.writeheader()
+                    writer_entry = (file, writer, temporary_path, output_path)
                     writers[trade_date] = writer_entry
 
                 writer_entry[1].writerow(row)
                 rows += 1
-    finally:
-        for file, _ in writers.values():
+        for file, _, temporary_path, output_path in writers.values():
+            file.flush()
+            os.fsync(file.fileno())
             file.close()
+            os.replace(temporary_path, output_path)
+    finally:
+        for file, _, temporary_path, _ in writers.values():
+            if not file.closed:
+                file.close()
+            temporary_path.unlink(missing_ok=True)
 
     print(f"rows={rows} dates={len(writers)} output_dir={output_dir}")
     return 0

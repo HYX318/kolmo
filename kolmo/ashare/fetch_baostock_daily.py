@@ -13,6 +13,7 @@ from datetime import date
 from pathlib import Path
 from typing import Iterable
 
+from kolmo.ashare.board_rules import board_for_symbol
 from kolmo.paths import data_path
 
 
@@ -43,6 +44,7 @@ NORMALIZED_COLUMNS = [
     "date",
     "symbol",
     "exchange",
+    "board",
     "open",
     "high",
     "low",
@@ -370,6 +372,7 @@ def append_normalized(
                         "date": compact_date(row.get("date", "")),
                         "symbol": stock.symbol,
                         "exchange": exchange_suffix(exchange),
+                        "board": board_for_symbol(stock.symbol),
                         "open": row.get("open", ""),
                         "high": row.get("high", ""),
                         "low": row.get("low", ""),

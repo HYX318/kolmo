@@ -1,0 +1,1 @@
+"""Fundamental data-product helpers."""

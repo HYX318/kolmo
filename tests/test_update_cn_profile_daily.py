@@ -78,6 +78,7 @@ class MergeRawCacheTest(unittest.TestCase):
                 limit=0,
                 no_include_delisted=False,
                 full_start_date="20170101",
+                partition_on_fetch_failure=False,
             )
             captured: dict[str, list[str]] = {}
             with patch.object(
@@ -91,6 +92,28 @@ class MergeRawCacheTest(unittest.TestCase):
             self.assertIn("kolmo.ashare.fetch_baostock_daily", command)
             self.assertIn("--no-combine", command)
             self.assertNotIn("kolmo.ashare.build_cn_profile_daily", command)
+
+    def test_profile_update_does_not_enable_partial_partition_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output_dir = root / "profile"
+            latest = output_dir / "2026" / "07" / "20260707.csv"
+            latest.parent.mkdir(parents=True)
+            latest.touch()
+            args = update_cn_profile_daily.argparse.Namespace(
+                target="profile", output_dir=str(output_dir), end_date="20260718",
+                lookback_days=10, adjust="qfq", sleep=0.0, workers=4,
+                refresh_raw=False, raw_window="", limit=0, no_include_delisted=False,
+                full_start_date="20170101", partition_on_fetch_failure=False,
+            )
+            captured = {}
+            with patch.object(
+                update_cn_profile_daily,
+                "run",
+                side_effect=lambda command, cwd: captured.setdefault("command", command) and 0,
+            ):
+                self.assertEqual(update_cn_profile_daily.update_exchange(args, root, "sz"), 0)
+            self.assertNotIn("--partition-on-fetch-failure", captured["command"])
 
 
 class RowsFromResultTest(unittest.TestCase):

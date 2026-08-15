@@ -104,6 +104,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Only fetch currently active A shares for the selected exchange.",
     )
+    parser.add_argument(
+        "--partition-on-fetch-failure",
+        action="store_true",
+        help="Explicit recovery override; allow partial profile partitions after fetch failures.",
+    )
     return parser.parse_args()
 
 
@@ -257,6 +262,8 @@ def update_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
             "--sleep",
             str(args.sleep),
         ]
+        if args.partition_on_fetch_failure:
+            command.append("--partition-on-fetch-failure")
     else:
         command = [
             sys.executable,
