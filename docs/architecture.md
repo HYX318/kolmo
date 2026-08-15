@@ -8,9 +8,9 @@ portfolio accounting, or trading rules.
 
 ```text
 upstream providers
-  -> raw caches
+  -> raw caches + completed fetch-run evidence
   -> normalized per-symbol files
-  -> profile/daily/{exchange}/YYYY/MM/YYYYMMDD.csv
+  -> profile/daily/{exchange}/YYYY/MM/YYYYMMDD.csv + provenance sidecar
   -> catalog/objects/profile_daily/{sha256}.csv
   -> catalog/snapshots/profile_daily/{snapshot_id}/manifest.json
   -> downstream research systems
@@ -143,8 +143,17 @@ Before downstream research trusts new data, Kolmo should be able to report:
 Provider cross-checks against exchange-published OHLC, expected-universe row
 counts, and richer anomaly history remain future work.
 
+Each newly written profile partition is bound to a BaoStock fetch-run evidence
+file. The evidence records its requested date range, completion status, failed
+symbol count, and hash of its run-scoped failure manifest. Snapshot publication
+accepts a partition as `PASS` only when that binding points to a completed
+zero-failure run and both hashes still match. A missing provenance sidecar on
+legacy data is `RESEARCH_ONLY`, not a reason to infer success or failure from
+an old date-named failure CSV. Interrupted fetches leave `status=running` and
+cannot become publishable evidence.
+
 Snapshot manifests currently mark the absence of independent exchange-calendar
-evidence and missing historical fetch-failure manifests as `RESEARCH_ONLY`, not
-`PASS`. A future calendar and date-effective security-master product must be
-published and hashed before downstream systems can claim complete sessions or
-complete historical universes.
+evidence and legacy partitions without fetch provenance as `RESEARCH_ONLY`.
+A future calendar and date-effective security-master product must be published
+and hashed before downstream systems can claim complete sessions or complete
+historical universes.

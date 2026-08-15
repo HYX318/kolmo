@@ -270,28 +270,33 @@ class ProfileSnapshotCatalog:
         staging_dir = self.staging_root / uuid.uuid4().hex
         partitions: List[Dict[str, object]] = []
         quality_results: List[Dict[str, object]] = []
-        failure_evidence: Dict[Tuple[str, str], Optional[int]] = {}
+        fetch_evidence: Dict[Tuple[str, str], Optional[Tuple[Path, str]]] = {}
         adjustments: Set[str] = set()
         try:
             staging_dir.mkdir(parents=True, exist_ok=False)
             for trade_date in selected_dates:
                 for exchange in EXCHANGES:
-                    failure_path = self._failure_manifest_path(exchange, trade_date)
-                    failure_rows = self._failure_rows(failure_path)
-                    failure_evidence[(trade_date, exchange)] = failure_rows
-                    if failure_rows is not None and failure_rows:
+                    source_path = self.profile_path(exchange, trade_date)
+                    if not source_path.is_file():
                         raise ProfileSnapshotError(
-                            f"BaoStock failure manifest has {failure_rows} data rows: {failure_path}"
+                            f"required {exchange.upper()} profile partition is missing: {source_path}"
                         )
-                    if failure_rows is None:
+                    evidence_identity = self._validate_partition_fetch_evidence(
+                        source_path, exchange, trade_date
+                    )
+                    fetch_evidence[(trade_date, exchange)] = evidence_identity
+                    if evidence_identity is None:
                         quality_results.append(
                             {
                                 "level": "RESEARCH_ONLY",
                                 "code": "fetch_failure_evidence_missing",
-                                "message": "BaoStock failure manifest is absent; no-failure status is unverified",
+                                "message": (
+                                    "profile provenance is absent; fetch completion and no-failure "
+                                    "status are unverified"
+                                ),
                                 "date": trade_date,
                                 "exchange": exchange,
-                                "path": self._relative_path(failure_path),
+                                "path": self._relative_path(self._provenance_path(source_path)),
                             }
                         )
                     else:
@@ -299,17 +304,12 @@ class ProfileSnapshotCatalog:
                             {
                                 "level": "PASS",
                                 "code": "no_fetch_failures",
-                                "message": "BaoStock failure manifest exists and has no data rows",
+                                "message": "profile partition is bound to a completed zero-failure fetch run",
                                 "date": trade_date,
                                 "exchange": exchange,
-                                "path": self._relative_path(failure_path),
+                                "path": self._relative_path(evidence_identity[0]),
                                 "rows": 0,
                             }
-                        )
-                    source_path = self.profile_path(exchange, trade_date)
-                    if not source_path.is_file():
-                        raise ProfileSnapshotError(
-                            f"required {exchange.upper()} profile partition is missing: {source_path}"
                         )
                     temporary_object = staging_dir / f"{trade_date}-{exchange}-{uuid.uuid4().hex}.csv"
                     try:
@@ -349,11 +349,13 @@ class ProfileSnapshotCatalog:
 
             for trade_date in selected_dates:
                 for exchange in EXCHANGES:
-                    failure_path = self._failure_manifest_path(exchange, trade_date)
-                    failure_rows = self._failure_rows(failure_path)
-                    if failure_rows != failure_evidence[(trade_date, exchange)]:
+                    evidence_identity = fetch_evidence[(trade_date, exchange)]
+                    if evidence_identity is None:
+                        continue
+                    evidence_path, evidence_hash = evidence_identity
+                    if _sha256_file(evidence_path) != evidence_hash:
                         raise ProfileSnapshotError(
-                            f"BaoStock failure evidence changed during publication: {failure_path}"
+                            f"fetch evidence changed during publication: {evidence_path}"
                         )
             quality_results.append(
                 {
@@ -577,35 +579,84 @@ class ProfileSnapshotCatalog:
         except (OSError, UnicodeDecodeError, csv.Error) as exc:
             raise ProfileSnapshotError(f"cannot validate profile partition {path}: {exc}") from exc
 
-    def _failure_manifest_path(self, exchange: str, trade_date: str) -> Path:
-        return (
-            self.data_root
-            / "raw"
-            / "ashare"
-            / "baostock"
-            / exchange
-            / f"failures_{exchange}_daily_{trade_date}.csv"
-        )
-
     @staticmethod
-    def _failure_rows(path: Path) -> Optional[int]:
-        if not path.exists():
+    def _provenance_path(profile_path: Path) -> Path:
+        return profile_path.with_name(f"{profile_path.name}.provenance.json")
+
+    def _validate_partition_fetch_evidence(
+        self, source_path: Path, exchange: str, trade_date: str
+    ) -> Optional[Tuple[Path, str]]:
+        provenance_path = self._provenance_path(source_path)
+        if not provenance_path.exists():
             return None
-        if not path.is_file():
-            raise ProfileSnapshotError(f"BaoStock failure manifest is not a file: {path}")
+        if not provenance_path.is_file():
+            raise ProfileSnapshotError(f"profile provenance is not a file: {provenance_path}")
         try:
-            with path.open("r", encoding="utf-8", newline="") as source:
-                reader = csv.reader(source)
-                header = next(reader, None)
-                if header is None:
-                    return None
-                if header != ["symbol", "status", "error"]:
-                    raise ProfileSnapshotError(
-                        f"invalid BaoStock failure manifest schema: {path}: {header!r}"
-                    )
-                return sum(1 for row in reader if any(field.strip() for field in row))
-        except (OSError, UnicodeDecodeError, csv.Error) as exc:
-            raise ProfileSnapshotError(f"cannot read BaoStock failure manifest {path}: {exc}") from exc
+            with provenance_path.open("r", encoding="utf-8") as source:
+                provenance = json.load(source)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProfileSnapshotError(
+                f"cannot read profile provenance {provenance_path}: {exc}"
+            ) from exc
+        required = {
+            "schema_version",
+            "product_id",
+            "date",
+            "exchange",
+            "profile_path",
+            "profile_sha256",
+            "fetch_evidence_path",
+            "fetch_evidence_sha256",
+        }
+        if not isinstance(provenance, dict) or required - set(provenance):
+            raise ProfileSnapshotError(f"invalid profile provenance schema: {provenance_path}")
+        if provenance["product_id"] != "profile_daily_partition_provenance":
+            raise ProfileSnapshotError(f"invalid profile provenance product: {provenance_path}")
+        if provenance["date"] != trade_date or provenance["exchange"] != exchange:
+            raise ProfileSnapshotError(f"profile provenance does not match partition: {provenance_path}")
+        if provenance["profile_path"] != str(source_path.resolve()):
+            raise ProfileSnapshotError(f"profile provenance source path mismatch: {provenance_path}")
+        if provenance["profile_sha256"] != _sha256_file(source_path):
+            raise ProfileSnapshotError(f"profile provenance hash mismatch: {provenance_path}")
+
+        raw_evidence_path = Path(str(provenance["fetch_evidence_path"]))
+        evidence_path = (
+            raw_evidence_path.resolve()
+            if raw_evidence_path.is_absolute()
+            else (self.data_root / raw_evidence_path).resolve()
+        )
+        try:
+            evidence_path.relative_to(self.data_root)
+        except ValueError as exc:
+            raise ProfileSnapshotError(
+                f"fetch evidence escapes data root: {evidence_path}"
+            ) from exc
+        if not evidence_path.is_file():
+            raise ProfileSnapshotError(f"fetch evidence does not exist: {evidence_path}")
+        evidence_hash = _sha256_file(evidence_path)
+        if provenance["fetch_evidence_sha256"] != evidence_hash:
+            raise ProfileSnapshotError(f"fetch evidence hash mismatch: {provenance_path}")
+        try:
+            with evidence_path.open("r", encoding="utf-8") as source:
+                evidence = json.load(source)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProfileSnapshotError(f"cannot read fetch evidence {evidence_path}: {exc}") from exc
+        try:
+            symbols = evidence["symbols"]
+            failed = symbols["failed"]
+            start_date = self._normalize_date(str(evidence["start_date"]))
+            end_date = self._normalize_date(str(evidence["end_date"]))
+        except (KeyError, TypeError, ProfileSnapshotError) as exc:
+            raise ProfileSnapshotError(f"invalid fetch evidence schema: {evidence_path}") from exc
+        if evidence.get("product_id") != "baostock_daily_fetch":
+            raise ProfileSnapshotError(f"invalid fetch evidence product: {evidence_path}")
+        if evidence.get("exchange") != exchange or not start_date <= trade_date <= end_date:
+            raise ProfileSnapshotError(f"fetch evidence does not cover partition: {evidence_path}")
+        if evidence.get("status") != "completed" or not isinstance(failed, int) or failed != 0:
+            raise ProfileSnapshotError(
+                f"fetch evidence is not a completed zero-failure run: {evidence_path}"
+            )
+        return evidence_path, evidence_hash
 
     def _validate_manifest(self, manifest: Mapping[str, object], snapshot_id: str) -> None:
         expected_keys = {

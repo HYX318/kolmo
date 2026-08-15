@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import json
 import os
 import sys
 import tempfile
@@ -46,6 +48,11 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Overwrite existing date files.",
     )
+    parser.add_argument(
+        "--fetch-evidence",
+        default="",
+        help="Completed BaoStock fetch-evidence JSON to bind to every written partition.",
+    )
     return parser.parse_args()
 
 
@@ -70,11 +77,58 @@ def output_path_for_date(output_dir: Path, trade_date: str, extension: str, layo
     return output_dir / trade_date[:4] / trade_date[4:6] / f"{trade_date}.{extension}"
 
 
+def provenance_path_for_profile(profile_path: Path) -> Path:
+    return profile_path.with_name(f"{profile_path.name}.provenance.json")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def load_fetch_evidence(path: Path) -> dict:
+    try:
+        with path.open("r", encoding="utf-8") as source:
+            evidence = json.load(source)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read fetch evidence: {path}: {exc}") from exc
+    required = {
+        "schema_version", "product_id", "run_id", "exchange", "start_date", "end_date",
+        "status", "failure_manifest_path", "failure_manifest_sha256", "symbols",
+    }
+    missing = sorted(required - set(evidence)) if isinstance(evidence, dict) else sorted(required)
+    if missing:
+        raise ValueError(f"invalid fetch evidence {path}; missing fields: {missing}")
+    return evidence
+
+
+def write_atomic_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as output:
+            json.dump(payload, output, ensure_ascii=True, indent=2, sort_keys=True)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
 def main() -> int:
     args = parse_args()
     input_path = Path(args.input)
     output_dir = Path(args.output_dir)
     delimiter = parse_delimiter(args.delimiter)
+    fetch_evidence_path = Path(args.fetch_evidence).resolve() if args.fetch_evidence else None
+    fetch_evidence = load_fetch_evidence(fetch_evidence_path) if fetch_evidence_path else None
 
     if not input_path.is_file():
         print(f"input does not exist: {input_path}", file=sys.stderr)
@@ -131,6 +185,20 @@ def main() -> int:
             os.fsync(file.fileno())
             file.close()
             os.replace(temporary_path, output_path)
+        if fetch_evidence_path and fetch_evidence:
+            evidence_hash = sha256_file(fetch_evidence_path)
+            for trade_date, (_, _, _, output_path) in writers.items():
+                provenance = {
+                    "schema_version": "1.0.0",
+                    "product_id": "profile_daily_partition_provenance",
+                    "date": trade_date,
+                    "exchange": fetch_evidence["exchange"],
+                    "profile_path": str(output_path.resolve()),
+                    "profile_sha256": sha256_file(output_path),
+                    "fetch_evidence_path": str(fetch_evidence_path),
+                    "fetch_evidence_sha256": evidence_hash,
+                }
+                write_atomic_json(provenance_path_for_profile(output_path), provenance)
     finally:
         for file, _, temporary_path, _ in writers.values():
             if not file.closed:
