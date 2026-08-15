@@ -97,6 +97,11 @@ $KOLMO_DATA_ROOT/
     ashare/
       financial_statement/
         quarterly/
+  reference/
+    ashare/
+      trading_calendar/
+      security_master/
+        observed/
 ```
 
 Daily profile rows include a coarse `board` classification for A-share universe
@@ -467,6 +472,11 @@ python3 -m kolmo.scheduler.update_cn_profile_if_trading_day \
   --calendar baostock -- --target all --workers 4
 ```
 
+Every scheduled run also writes an observed security-master snapshot for that
+date. These snapshots accumulate the point-in-time history consumed by research
+systems; a historical backtest must never select a snapshot observed after its
+decision date.
+
 The wrapper reads the repository-level `.quant-lab.env` file when present, so
 `KOLMO_DATA_ROOT` can stay in one place. Logs are written to:
 
@@ -495,6 +505,28 @@ python3 -m kolmo.scheduler.update_cn_profile_if_trading_day --date 20260729 -- -
 # Local weekday-only fallback for script testing; this does not know China holidays.
 python3 -m kolmo.scheduler.update_cn_profile_if_trading_day --calendar weekday --date 20260729 -- --target profile
 ```
+
+## Reference Products
+
+Build a stored calendar observation for a selected date range:
+
+```bash
+python3 -m kolmo.reference.trading_calendar \
+  --start-date 20170101 \
+  --end-date 20261231
+```
+
+Build an observed security-master snapshot:
+
+```bash
+python3 -m kolmo.reference.security_master --as-of-date 20260816
+```
+
+The security master captures BaoStock listing/delisting information, board and
+base board-limit rules. It deliberately marks ST status, IPO exception periods
+and corporate-action price-limit effects as unresolved. Downstream backtests may
+use it for conservative universe filtering, but must not treat it as final
+execution-limit evidence.
 
 ## Data Sources
 

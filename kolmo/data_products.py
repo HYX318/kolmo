@@ -71,6 +71,30 @@ MARKET_FLOW_DAILY_COLUMNS = [
     "unlock_shares",
 ]
 
+TRADING_CALENDAR_COLUMNS = [
+    "date",
+    "market",
+    "is_trading_day",
+    "source",
+    "observed_at",
+]
+
+SECURITY_MASTER_COLUMNS = [
+    "observed_at",
+    "symbol",
+    "exchange",
+    "name",
+    "board",
+    "listing_date",
+    "delisting_date",
+    "status_as_of",
+    "st_status",
+    "base_price_limit_pct",
+    "price_limit_rule",
+    "price_limit_status",
+    "source",
+]
+
 
 @dataclass(frozen=True)
 class ValidationResult:
