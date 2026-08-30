@@ -2,20 +2,21 @@
 set -euo pipefail
 
 kolmo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-label="com.galoishuang.kolmo.update-cn-profile-daily"
+label="com.galoishuang.kolmo.update-us-daily"
 agent_dir="$HOME/Library/LaunchAgents"
 plist="$agent_dir/$label.plist"
-wrapper="$kolmo_root/scripts/update_cn_profile_daily_scheduled.sh"
+wrapper="$kolmo_root/scripts/update_us_daily_scheduled.sh"
 
 usage() {
     cat <<EOF
 Usage:
-  scripts/install_update_launchagent.sh install    Install and load the 17:00 scheduled update.
-  scripts/install_update_launchagent.sh uninstall  Unload and remove the LaunchAgent.
-  scripts/install_update_launchagent.sh print      Print the plist path and current launchctl state.
+  scripts/install_us_update_launchagent.sh install
+  scripts/install_us_update_launchagent.sh uninstall
+  scripts/install_us_update_launchagent.sh print
 
-The job runs every day at 17:00 local time. The wrapper checks the A-share
-trading calendar before updating, so weekends and exchange holidays are skipped.
+The job runs every day at 10:00 local time. This is after the US session and
+Tiingo's overnight correction window in Asia/Shanghai. Weekend and US-holiday
+runs are harmless overlapping updates because no synthetic sessions are added.
 EOF
 }
 
@@ -36,7 +37,7 @@ install_agent() {
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key>
-    <integer>17</integer>
+    <integer>10</integer>
     <key>Minute</key>
     <integer>0</integer>
   </dict>

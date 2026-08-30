@@ -95,6 +95,18 @@ SECURITY_MASTER_COLUMNS = [
     "source",
 ]
 
+INDUSTRY_CLASSIFICATION_COLUMNS = [
+    "classification_date",
+    "provider_update_date",
+    "retrieved_at",
+    "symbol",
+    "exchange",
+    "name",
+    "industry",
+    "classification",
+    "source",
+]
+
 
 @dataclass(frozen=True)
 class ValidationResult:
