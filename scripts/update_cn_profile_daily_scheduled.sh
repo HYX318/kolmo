@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-kolmo_root="$repo_root/kolmo"
-env_file="$repo_root/.quant-lab.env"
+kolmo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+env_file="$kolmo_root/.env"
 data_root="${KOLMO_DATA_ROOT:-$HOME/dat/all}"
 
 if [[ -f "$env_file" ]]; then
@@ -14,6 +13,10 @@ if [[ -f "$env_file" ]]; then
 fi
 
 export KOLMO_DATA_ROOT="$data_root"
+python_bin="$kolmo_root/.venv/bin/python"
+if [[ ! -x "$python_bin" ]]; then
+    python_bin="$(command -v python3)"
+fi
 mkdir -p "$KOLMO_DATA_ROOT/logs/kolmo" "$KOLMO_DATA_ROOT/work/ashare"
 
 lock_dir="$KOLMO_DATA_ROOT/work/ashare/update_cn_profile_daily.lock"
@@ -42,17 +45,17 @@ trap 'rm -f "$lock_dir/pid" "$lock_dir/started_at"; rmdir "$lock_dir"' EXIT
     printf '{"event":"scheduled_update_started","time":"%s"}\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')"
     cd "$kolmo_root"
     update_status=0
-    python3 -m kolmo.scheduler.update_cn_profile_if_trading_day --calendar baostock -- --target all --workers 4 || update_status=$?
+    "$python_bin" -m kolmo.scheduler.update_cn_profile_if_trading_day --calendar baostock -- --target all --workers 4 || update_status=$?
     health_status=0
-    python3 -m kolmo.ashare.profile_health_check \
+    "$python_bin" -m kolmo.ashare.profile_health_check \
         --days 20 \
         --json-output "$KOLMO_DATA_ROOT/logs/kolmo/profile_health_latest.json" \
         --csv-output "$KOLMO_DATA_ROOT/logs/kolmo/profile_health_latest.csv" || health_status=$?
     reference_status=0
-    python3 -m kolmo.reference.security_master --as-of-date "$(date '+%Y%m%d')" || reference_status=$?
+    "$python_bin" -m kolmo.reference.security_master --as-of-date "$(date '+%Y%m%d')" || reference_status=$?
     snapshot_status=0
     if [[ "$update_status" -eq 0 && "$health_status" -eq 0 && "$reference_status" -eq 0 ]]; then
-        python3 -m kolmo.catalog.profile_snapshot publish --latest-days 80 || snapshot_status=$?
+        "$python_bin" -m kolmo.catalog.profile_snapshot publish --latest-days 80 || snapshot_status=$?
     else
         snapshot_status=2
     fi

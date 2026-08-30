@@ -532,6 +532,89 @@ class ProfileSnapshotCatalogTest(unittest.TestCase):
         manifest = self.catalog.publish(dates=[suspended_date])
         self.catalog.verify_snapshot(str(manifest["snapshot_id"]))
 
+    def test_suspended_blank_ohlc_is_normalized_only_in_snapshot_object(self) -> None:
+        trade_date = "20260821"
+        write_day(self.catalog, "20260820", close="9")
+        source_path = self.catalog.profile_path("sz", trade_date)
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        with source_path.open("w", encoding="utf-8", newline="") as output:
+            writer = csv.DictWriter(output, fieldnames=PROFILE_COLUMNS, lineterminator="\n")
+            writer.writeheader()
+            writer.writerow(
+                profile_row(
+                    trade_date,
+                    "sz",
+                    "000001.SZ",
+                    open="",
+                    high="",
+                    low="",
+                    close="",
+                    preclose="",
+                    trade_status="0",
+                )
+            )
+        source_before = source_path.read_bytes()
+        source_inode = source_path.stat().st_ino
+        write_profile(self.catalog, trade_date, "sh")
+
+        manifest = self.catalog.publish(dates=[trade_date])
+
+        sz_partition = next(item for item in manifest["partitions"] if item["exchange"] == "sz")
+        object_path = self.root / str(sz_partition["object_path"])
+        with object_path.open("r", encoding="utf-8", newline="") as source:
+            normalized = next(csv.DictReader(source))
+        self.assertEqual([normalized[field] for field in ("open", "high", "low", "close")], ["0"] * 4)
+        self.assertEqual(normalized["preclose"], "9.0")
+        self.assertEqual(source_path.read_bytes(), source_before)
+        self.assertEqual(source_path.stat().st_ino, source_inode)
+        self.assertNotEqual(object_path.stat().st_ino, source_inode)
+        result = next(
+            item for item in manifest["quality_results"]
+            if item["code"] == "suspended_blank_ohlc_normalized"
+        )
+        self.assertEqual(result["rows"], 1)
+        backfill = next(
+            item for item in manifest["quality_results"]
+            if item["code"] == "suspended_missing_preclose_backfilled"
+        )
+        self.assertEqual(backfill["reference_date"], "20260820")
+        self.assertEqual(backfill["reference_field"], "close")
+        self.assertEqual(backfill["reference_price"], 9.0)
+        self.catalog.verify_snapshot(str(manifest["snapshot_id"]))
+
+    def test_suspended_blank_ohlc_preclose_without_history_is_blocked(self) -> None:
+        trade_date = "20260821"
+        for exchange, symbol in (("sz", "000001.SZ"), ("sh", "600000.SH")):
+            path = self.catalog.profile_path(exchange, trade_date)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8", newline="") as output:
+                writer = csv.DictWriter(output, fieldnames=PROFILE_COLUMNS, lineterminator="\n")
+                writer.writeheader()
+                writer.writerow(
+                    profile_row(
+                        trade_date, exchange, symbol, open="", high="", low="", close="",
+                        preclose="", trade_status="0",
+                    )
+                )
+
+        with self.assertRaisesRegex(ProfileSnapshotError, "no earlier valid source price"):
+            self.catalog.publish(dates=[trade_date])
+
+    def test_tradable_blank_ohlc_is_not_normalized(self) -> None:
+        trade_date = "20260822"
+        source_path = self.catalog.profile_path("sz", trade_date)
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        with source_path.open("w", encoding="utf-8", newline="") as output:
+            writer = csv.DictWriter(output, fieldnames=PROFILE_COLUMNS, lineterminator="\n")
+            writer.writeheader()
+            writer.writerow(
+                profile_row(trade_date, "sz", "000001.SZ", open="", trade_status="1")
+            )
+        write_profile(self.catalog, trade_date, "sh")
+
+        with self.assertRaisesRegex(ProfileSnapshotError, "open must be numeric"):
+            self.catalog.publish(dates=[trade_date])
+
     def test_cli_publish_current_and_verify_are_scriptable(self) -> None:
         write_day(self.catalog, "20260810")
         publish_output = io.StringIO()

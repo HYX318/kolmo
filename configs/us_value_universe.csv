@@ -1,0 +1,31 @@
+symbol,asset_type,provider_symbol,enabled,company,sector,industry,cik,thesis
+AAPL,STK,AAPL,1,Apple,Information Technology,Technology Hardware,0000320193,ecosystem_brand_and_installed_base
+MSFT,STK,MSFT,1,Microsoft,Information Technology,Software and Cloud,0000789019,enterprise_software_and_azure
+AMZN,STK,AMZN,1,Amazon,Consumer Discretionary,Broadline Retail and Cloud,0001018724,scale_logistics_and_aws
+NVDA,STK,NVDA,1,NVIDIA,Information Technology,Semiconductors,0001045810,accelerated_computing_platform
+AVGO,STK,AVGO,1,Broadcom,Information Technology,Semiconductors and Infrastructure Software,0001730168,connectivity_chips_and_infrastructure_software
+CDNS,STK,CDNS,1,Cadence Design Systems,Information Technology,Electronic Design Automation Software,0000813672,chip_design_workflows_and_switching_costs
+ANET,STK,ANET,1,Arista Networks,Information Technology,Cloud Networking Equipment,0001596532,data_center_networking_and_operating_system
+MU,STK,MU,1,Micron Technology,Information Technology,Memory Semiconductors,0000723125,memory_scale_and_process_technology
+LIFE,STK,LIFE,1,Life360,Information Technology,Consumer Location and Safety Software,0001788451,location_network_and_subscription_platform
+GOOGL,STK,GOOGL,1,Alphabet,Communication Services,Interactive Media and Search,0001652044,search_distribution_and_ai_platform
+META,STK,META,1,Meta Platforms,Communication Services,Interactive Media,0001326801,social_graph_and_advertising_scale
+HD,STK,HD,1,Home Depot,Consumer Discretionary,Home Improvement Retail,0000354950,professional_customer_network_and_scale
+TSLA,STK,TSLA,1,Tesla,Consumer Discretionary,Automobiles and Energy Systems,0001318605,ev_scale_software_and_energy_storage
+WMT,STK,WMT,1,Walmart,Consumer Staples,Consumer Staples Distribution and Retail,0000104169,scale_logistics_and_omnichannel_retail
+COST,STK,COST,1,Costco Wholesale,Consumer Staples,Consumer Staples Distribution and Retail,0000909832,membership_model_and_customer_loyalty
+BRK.B,STK,BRK-B,1,Berkshire Hathaway,Financials,Multi-Sector Holdings and Insurance,0001067983,insurance_float_and_capital_allocation
+JPM,STK,JPM,1,JPMorgan Chase,Financials,Diversified Banks,0000019617,scale_deposits_and_financial_platform
+LLY,STK,LLY,1,Eli Lilly,Health Care,Pharmaceuticals,0000059478,innovative_medicines_and_pipeline
+JNJ,STK,JNJ,1,Johnson and Johnson,Health Care,Pharmaceuticals and Medical Technology,0000200406,diversified_healthcare_platform
+CAT,STK,CAT,1,Caterpillar,Industrials,Construction Machinery,0000018230,dealer_network_and_installed_base
+GE,STK,GE,1,GE Aerospace,Industrials,Aerospace and Defense,0000040545,commercial_engine_installed_base
+BWXT,STK,BWXT,1,BWX Technologies,Industrials,Nuclear Components and Services,0001486957,nuclear_qualification_and_mission_critical_backlog
+RKLB,STK,RKLB,1,Rocket Lab,Industrials,Space Launch and Systems,0001819994,vertically_integrated_launch_and_space_systems
+XOM,STK,XOM,1,Exxon Mobil,Energy,Integrated Oil and Gas,0000034088,integrated_assets_and_project_execution
+LIN,STK,LIN,1,Linde,Materials,Industrial Gases,0001707925,local_density_and_long_term_contracts
+NEE,STK,NEE,1,NextEra Energy,Utilities,Electric Utilities and Renewables,0000753308,regulated_utility_and_renewable_scale
+PLD,STK,PLD,1,Prologis,Real Estate,Industrial REITs,0001045609,global_logistics_real_estate_network
+SPY,ETF,SPY,1,SPDR S&P 500 ETF Trust,ETF,US Large Cap,,market_benchmark
+QQQ,ETF,QQQ,1,Invesco QQQ Trust,ETF,Nasdaq 100,,growth_benchmark
+SMH,ETF,SMH,1,VanEck Semiconductor ETF,ETF,Semiconductors,,industry_benchmark

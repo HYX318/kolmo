@@ -1,7 +1,7 @@
 # kolmo
 
-China market data ingestion, normalization, profile generation, and maintenance
-tools.
+China and US market data ingestion, normalization, profile generation, and
+maintenance tools.
 
 `kolmo` is the standalone data layer for the research stack. It prepares
 upstream market data for downstream systems such as `cn_daily_lab`, but it does
@@ -32,6 +32,20 @@ Planned:
 - symbol-level inspection pages
 - exchange OHLC validation data products
 - point-in-time financial statement validation
+
+Current US support:
+
+- Tiingo end-of-day stock and ETF ingestion
+- atomic full and overlapping incremental updates
+- offline schema/OHLC/corporate-action validation
+- provider-neutral drawdown statistics
+
+Current local terminal support:
+
+- separated React frontend and Python market-data API
+- unified local search across A-shares, US stocks, and US ETFs
+- daily, five-session, weekly, and monthly OHLCV charts
+- cached per-symbol gzip reads with automatic file-change invalidation
 
 ## Project Layout
 
@@ -90,6 +104,7 @@ $KOLMO_DATA_ROOT/
       akshare/
   work/
     ashare/
+    US/drawdown/latest.csv
   validation/
     ashare/
       profile_ohlc_check/
@@ -102,6 +117,10 @@ $KOLMO_DATA_ROOT/
       trading_calendar/
       security_master/
         observed/
+  US/
+    STK/1d/{SYMBOL}.csv.gz
+    ETF/1d/{SYMBOL}.csv.gz
+    _meta/fetch_runs/{RUN_ID}.json
 ```
 
 Daily profile rows include a coarse `board` classification for A-share universe
@@ -131,14 +150,136 @@ export KOLMO_DATA_ROOT=/Volumes/KOLMO_DATA/kolmo
 
 ## Install
 
+From a fresh standalone clone, one command creates the Python virtual
+environment, installs Kolmo, compiles the C++ raw scanner, builds the React
+frontend, and exposes the `kolmo` command through `~/.local/bin`:
+
 ```bash
-python3 -m pip install -r requirements.txt
+./install.sh
 ```
 
-Optional editable install:
+If `~/.local/bin` is not already in `PATH`, follow the single `export PATH=...`
+line printed by the installer. Local configuration lives in the ignored `.env`
+file copied from `.env.example`; no parent repository or parent configuration
+file is used.
+
+Start the local terminal after installation:
 
 ```bash
-python3 -m pip install -e .
+kolmo web
+```
+
+## US Daily Stocks and ETFs
+
+Edit `configs/us_value_universe.csv` to maintain the tracked universe. Each
+enabled row needs `symbol` and `asset_type` (`STK` or `ETF`); `provider_symbol`
+handles provider aliases such as `BRK.B` -> `BRK-B`. The included rows are a
+small starter universe, not an investment recommendation or a complete market
+universe.
+
+Keep the Tiingo token in Kolmo's ignored `.env` file and run the incremental
+fetch:
+
+```text
+TIINGO_API_TOKEN="your_token_here"
+```
+
+```bash
+python3 -m kolmo.us_market.fetch_daily
+```
+
+The first run requests all available history from `1962-01-01`. Later runs
+replace a 10-calendar-day overlap and preserve older rows. If a new or corrected
+cash dividend/split is detected, that symbol is automatically refreshed from
+the configured start date because provider-adjusted history may have changed.
+A symbol's file naturally begins at the first date Tiingo has for that listing;
+the request start does not fabricate pre-listing rows. The default end date is
+the local current date, and the provider returns only completed market sessions.
+A manual full rebuild is also available:
+
+```bash
+python3 -m kolmo.us_market.fetch_daily --refresh
+```
+
+Fetch selected assets without editing the universe:
+
+```bash
+python3 -m kolmo.us_market.fetch_daily \
+  --symbol AAPL:STK \
+  --symbol SPY:ETF
+```
+
+Canonical outputs are atomic gzip CSV files:
+
+```text
+$KOLMO_DATA_ROOT/US/STK/1d/AAPL.csv.gz
+$KOLMO_DATA_ROOT/US/ETF/1d/SPY.csv.gz
+```
+
+Every fetch writes run evidence under `US/_meta/fetch_runs/`. One symbol failure
+does not overwrite its previous valid file and does not prevent other symbols
+from completing; the command exits nonzero when any requested symbol fails.
+
+Validate cached files without network access, then build neutral drawdown
+statistics:
+
+```bash
+python3 -m kolmo.us_market.validate_daily \
+  --json-output "$KOLMO_DATA_ROOT/validation/US/daily_latest.json"
+python3 -m kolmo.us_market.drawdown
+```
+
+The drawdown product uses split-only adjusted closes for price drawdown and
+Tiingo adjusted closes for a separate total-return drawdown. It contains no
+buy/sell threshold; strategy interpretation belongs to downstream research.
+
+## Local Market Terminal
+
+The market terminal directly reads canonical Kolmo files and never downloads
+market data while serving the UI. A normal installation builds it automatically:
+
+```bash
+./install.sh
+```
+
+Start the standalone application and open it in the default browser:
+
+```bash
+kolmo web
+```
+
+For a server-only session, such as one started from a terminal multiplexer:
+
+```bash
+kolmo web --no-browser
+```
+
+Open `http://127.0.0.1:8765`. Symbol search covers local A-shares and US assets;
+the API performs daily, five-session, weekly, and monthly aggregation before
+returning only the selected series. Parsed source files are cached and keyed by
+file modification time and size, so a scheduled data update is visible on the
+next request without restarting the terminal.
+
+### Scheduled US Update on macOS
+
+The checked-in job wrapper fetches prices, validates every configured asset,
+and rebuilds drawdown statistics in one locked run. Install its LaunchAgent only
+when automatic updates are wanted:
+
+```bash
+scripts/install_us_update_launchagent.sh install
+scripts/install_us_update_launchagent.sh print
+```
+
+It runs daily at 10:00 system-local time, safely after the US close and Tiingo
+correction window when the machine uses Asia/Shanghai. Weekend and US-holiday
+runs simply repeat the overlap window and create no market rows. Logs are stored
+at `$KOLMO_DATA_ROOT/logs/kolmo/update_us_daily.log`.
+
+Remove the schedule with:
+
+```bash
+scripts/install_us_update_launchagent.sh uninstall
 ```
 
 ## Full Build
@@ -460,7 +601,7 @@ On macOS, install a LaunchAgent to run the updater every day at 17:00 local
 time:
 
 ```bash
-kolmo/scripts/install_update_launchagent.sh install
+scripts/install_update_launchagent.sh install
 ```
 
 The scheduled wrapper checks the BaoStock A-share trading calendar first. If
@@ -477,8 +618,8 @@ date. These snapshots accumulate the point-in-time history consumed by research
 systems; a historical backtest must never select a snapshot observed after its
 decision date.
 
-The wrapper reads the repository-level `.quant-lab.env` file when present, so
-`KOLMO_DATA_ROOT` can stay in one place. Logs are written to:
+The wrapper reads Kolmo's own `.env` and uses its `.venv` interpreter. Logs are
+written to:
 
 ```text
 $KOLMO_DATA_ROOT/logs/kolmo/update_cn_profile_daily.log
@@ -487,13 +628,13 @@ $KOLMO_DATA_ROOT/logs/kolmo/update_cn_profile_daily.log
 Check the installed job:
 
 ```bash
-kolmo/scripts/install_update_launchagent.sh print
+scripts/install_update_launchagent.sh print
 ```
 
 Remove it:
 
 ```bash
-kolmo/scripts/install_update_launchagent.sh uninstall
+scripts/install_update_launchagent.sh uninstall
 ```
 
 Manual dry checks:

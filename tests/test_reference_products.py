@@ -3,7 +3,11 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from kolmo.data_products import SECURITY_MASTER_COLUMNS, TRADING_CALENDAR_COLUMNS
+from kolmo.data_products import (
+    INDUSTRY_CLASSIFICATION_COLUMNS, SECURITY_MASTER_COLUMNS,
+    TRADING_CALENDAR_COLUMNS,
+)
+from kolmo.reference.industry_classification import normalize_rows as normalize_industry_rows
 from kolmo.reference.common import write_csv_atomic
 from kolmo.reference.security_master import normalize_rows as normalize_security_rows
 from kolmo.reference.security_master import price_limit_rule
@@ -13,6 +17,21 @@ from kolmo.reference.security_master_store import SecurityMasterUnavailableError
 
 
 class ReferenceProductTest(unittest.TestCase):
+    def test_industry_rows_are_date_effective_and_exclude_non_a_shares(self) -> None:
+        rows = normalize_industry_rows(
+            [
+                {"updateDate": "2026-05-01", "code": "sh.600000", "code_name": "PF Bank", "industry": "银行", "industryClassification": "证监会行业分类"},
+                {"updateDate": "2026-05-01", "code": "sh.000001", "code_name": "Index", "industry": "指数", "industryClassification": "test"},
+            ],
+            "20260513", "2026-08-28T00:00:00+00:00",
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["symbol"], "600000.SH")
+        self.assertEqual(rows[0]["classification_date"], "20260513")
+        self.assertEqual(rows[0]["provider_update_date"], "20260501")
+        self.assertEqual(list(rows[0]), INDUSTRY_CLASSIFICATION_COLUMNS)
+
     def test_calendar_rows_are_normalized_and_sorted(self) -> None:
         rows = normalize_calendar_rows(
             [

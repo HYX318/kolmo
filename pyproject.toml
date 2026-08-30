@@ -2,10 +2,13 @@
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+[tool.setuptools.packages.find]
+include = ["kolmo*"]
+
 [project]
 name = "kolmo"
 version = "0.1.0"
-description = "China market data ingestion, profile generation, and visualization tools."
+description = "China and US market data ingestion, normalization, and visualization tools."
 requires-python = ">=3.9"
 readme = "README.md"
 dependencies = [
@@ -15,6 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
+kolmo = "kolmo.cli:main"
 kolmo-build-cn-profile = "kolmo.ashare.build_cn_profile_daily:main"
 kolmo-update-cn-profile = "kolmo.ashare.update_cn_profile_daily:main"
 kolmo-fetch-baostock-daily = "kolmo.ashare.fetch_baostock_daily:main"
@@ -26,6 +30,7 @@ kolmo-profile-health-check = "kolmo.ashare.profile_health_check:main"
 kolmo-fetch-index-daily = "kolmo.index.fetch_baostock_index_daily:main"
 kolmo-fetch-trading-calendar = "kolmo.reference.trading_calendar:main"
 kolmo-build-security-master = "kolmo.reference.security_master:main"
+kolmo-fetch-industry-classification = "kolmo.reference.industry_classification:main"
 kolmo-check-profile-ohlc = "kolmo.validation.profile_ohlc_check:main"
 kolmo-fetch-baostock-financials = "kolmo.fundamental.fetch_baostock_financials:main"
 kolmo-validate-financials = "kolmo.fundamental.validate_financials:main"
@@ -33,3 +38,6 @@ kolmo-update-if-trading-day = "kolmo.scheduler.update_cn_profile_if_trading_day:
 kolmo-profile-summary = "kolmo.viz.profile_summary:main"
 kolmo-symbol-ohlcv = "kolmo.viz.symbol_ohlcv:main"
 kolmo-market-terminal = "kolmo.viz.market_terminal:main"
+kolmo-fetch-us-daily = "kolmo.us_market.fetch_daily:main"
+kolmo-validate-us-daily = "kolmo.us_market.validate_daily:main"
+kolmo-build-us-drawdown = "kolmo.us_market.drawdown:main"

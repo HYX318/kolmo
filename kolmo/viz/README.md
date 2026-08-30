@@ -9,20 +9,34 @@ Planned visualization scope:
 
 ## Local market terminal
 
-Run a localhost-only interactive terminal that reads the canonical external data
-root on demand:
+The terminal is now a separated React frontend and Python read-only API. It
+indexes local A-share and US per-symbol caches, then loads only the selected
+instrument into the browser.
+
+The standalone installer builds the frontend and installs the CLI:
 
 ```bash
-python3 -m kolmo.viz.market_terminal
+./install.sh
 ```
 
-Open `http://127.0.0.1:8765` in a browser. It has two views:
+Start the complete localhost-only application and open the default browser:
 
-- **个股 K 线**: reads one symbol's full BaoStock qfq raw cache, with OHLC,
-  volume, amount, and any available PE/PB fields.
-- **全市场**: reads one `profile/daily/{exchange}/YYYY/MM/YYYYMMDD.csv` file
-  at a time, so switching dates does not load the entire A-share history into
-  the browser.
+```bash
+kolmo web
+```
 
-The server binds only to `127.0.0.1` by default and makes no outbound network
-requests. Stop it with `Ctrl-C`.
+Use `kolmo web --no-browser` when only the local server should start.
+
+Open `http://127.0.0.1:8765`. The UI supports:
+
+- A-share and US symbol/company search
+- daily, five-session, weekly, and monthly OHLCV aggregation
+- one-, three-, five-year and complete-history ranges
+- raw/adjusted US prices and BaoStock qfq A-share prices
+- candlestick, volume, crosshair, zoom, and pan interactions
+
+The API caches parsed gzip files by path, modification time, and size. Updated
+files are picked up automatically without restarting the service. JSON payloads
+are gzip-compressed when supported by the browser. The service binds only to
+`127.0.0.1` by default and makes no outbound market-data requests. Stop it with
+`Ctrl-C`.

@@ -312,14 +312,18 @@ class ProfileSnapshotCatalog:
                             }
                         )
                     temporary_object = staging_dir / f"{trade_date}-{exchange}-{uuid.uuid4().hex}.csv"
-                    try:
-                        os.link(str(source_path), str(temporary_object))
-                    except OSError as exc:
-                        raise ProfileSnapshotError(
-                            "cannot hard-link profile source into object staging; "
-                            f"source and {self.catalog_root} must share a filesystem: {source_path}: {exc}"
-                        ) from exc
-                    before = temporary_object.stat()
+                    before = source_path.stat()
+                    normalization = self._copy_suspended_blank_ohlc_if_needed(
+                        source_path, temporary_object, exchange, trade_date
+                    )
+                    if normalization is None:
+                        try:
+                            os.link(str(source_path), str(temporary_object))
+                        except OSError as exc:
+                            raise ProfileSnapshotError(
+                                "cannot hard-link profile source into object staging; "
+                                f"source and {self.catalog_root} must share a filesystem: {source_path}: {exc}"
+                            ) from exc
                     rows, partition_adjustments = self._validate_csv(
                         temporary_object, exchange, trade_date
                     )
@@ -330,7 +334,7 @@ class ProfileSnapshotCatalog:
                         )
                     adjustments.update(partition_adjustments)
                     digest = _sha256_file(temporary_object)
-                    after = temporary_object.stat()
+                    after = source_path.stat()
                     if self._file_identity(before) != self._file_identity(after):
                         raise ProfileSnapshotError(
                             f"profile partition changed during publication: {source_path}"
@@ -346,6 +350,23 @@ class ProfileSnapshotCatalog:
                             "rows": rows,
                         }
                     )
+                    if normalization is not None:
+                        normalized_rows, backfills = normalization
+                        quality_results.append(
+                            {
+                                "level": "RESEARCH_ONLY",
+                                "code": "suspended_blank_ohlc_normalized",
+                                "message": (
+                                    "blank open/high/low/close values on suspended rows were "
+                                    "serialized as zero in the immutable snapshot object; source "
+                                    "profiles remain unchanged and no tradable price was inferred"
+                                ),
+                                "date": trade_date,
+                                "exchange": exchange,
+                                "rows": normalized_rows,
+                            }
+                        )
+                        quality_results.extend(backfills)
 
             for trade_date in selected_dates:
                 for exchange in EXCHANGES:
@@ -466,6 +487,134 @@ class ProfileSnapshotCatalog:
         except FileNotFoundError:
             pass
         _write_atomic(self.current_path, f"{snapshot_id}\n".encode("ascii"), staging_dir)
+
+    def _copy_suspended_blank_ohlc_if_needed(
+        self, source_path: Path, destination: Path, exchange: str, trade_date: str
+    ) -> Optional[Tuple[int, List[Dict[str, object]]]]:
+        """Copy only suspended rows needing a non-tradable OHLC representation.
+
+        A hard link cannot be edited because it aliases the raw profile inode.  When
+        an upstream suspended row omits one of its four same-day OHLC fields, write
+        a separate snapshot object with just those blanks represented as ``0``. If
+        all five price fields are blank, bind ``preclose`` to the latest earlier
+        valid source close/preclose; no prior value means publication fails.
+        """
+        rows: List[Dict[str, str]] = []
+        normalized_rows = 0
+        backfills: List[Dict[str, object]] = []
+        try:
+            with source_path.open("r", encoding="utf-8", newline="") as source:
+                reader = csv.DictReader(source)
+                if tuple(reader.fieldnames or ()) != PROFILE_COLUMNS:
+                    return None
+                for row in reader:
+                    copied = dict(row)
+                    try:
+                        suspended = float(copied.get("trade_status", "")) == 0.0
+                    except (TypeError, ValueError):
+                        suspended = False
+                    blank_fields = [
+                        field
+                        for field in ("open", "high", "low", "close")
+                        if not (copied.get(field) or "").strip()
+                    ]
+                    blank_preclose = not (copied.get("preclose") or "").strip()
+                    if suspended and blank_preclose and len(blank_fields) == 4:
+                        prior = self._latest_prior_price(exchange, copied["symbol"], trade_date)
+                        if prior is None:
+                            raise ProfileSnapshotError(
+                                "suspended blank OHLC/preclose has no earlier valid source price: "
+                                f"{source_path} symbol={copied['symbol']}"
+                            )
+                        normalized_rows += 1
+                        for field in blank_fields:
+                            copied[field] = "0"
+                        copied["preclose"] = str(prior["price"])
+                        backfills.append(
+                            {
+                                "level": "RESEARCH_ONLY",
+                                "code": "suspended_missing_preclose_backfilled",
+                                "message": (
+                                    "a suspended row with blank OHLC/preclose uses the latest "
+                                    "earlier valid source price for non-tradable valuation only"
+                                ),
+                                "date": trade_date,
+                                "exchange": exchange,
+                                "symbol": copied["symbol"],
+                                "reference_date": prior["date"],
+                                "reference_field": prior["field"],
+                                "reference_price": prior["price"],
+                                "reference_path": prior["path"],
+                                "reference_sha256": prior["sha256"],
+                            }
+                        )
+                    elif suspended and blank_fields:
+                        normalized_rows += 1
+                        for field in blank_fields:
+                            copied[field] = "0"
+                    rows.append(copied)
+        except (OSError, UnicodeDecodeError, csv.Error) as exc:
+            raise ProfileSnapshotError(
+                f"cannot prepare profile partition {source_path}: {exc}"
+            ) from exc
+        if normalized_rows == 0:
+            return None
+        try:
+            with destination.open("w", encoding="utf-8", newline="") as output:
+                writer = csv.DictWriter(output, fieldnames=PROFILE_COLUMNS, lineterminator="\n")
+                writer.writeheader()
+                writer.writerows(rows)
+                output.flush()
+                os.fsync(output.fileno())
+        except (OSError, csv.Error) as exc:
+            raise ProfileSnapshotError(
+                f"cannot write normalized profile snapshot object {destination}: {exc}"
+            ) from exc
+        return normalized_rows, backfills
+
+    def _latest_prior_price(
+        self, exchange: str, symbol: str, before_date: str
+    ) -> Optional[Dict[str, object]]:
+        """Return the latest earlier finite positive close, then preclose, from source data."""
+        candidates: List[Tuple[str, Path]] = []
+        for path in (self.profile_root / exchange).glob("*/*/*.csv"):
+            try:
+                candidate_date = self._normalize_date(path.stem)
+            except ProfileSnapshotError:
+                continue
+            if candidate_date < before_date and path == self.profile_path(exchange, candidate_date):
+                candidates.append((candidate_date, path))
+        for candidate_date, path in sorted(candidates, reverse=True):
+            try:
+                with path.open("r", encoding="utf-8", newline="") as source:
+                    reader = csv.DictReader(source)
+                    if tuple(reader.fieldnames or ()) != PROFILE_COLUMNS:
+                        continue
+                    for row in reader:
+                        if (
+                            row.get("date") != candidate_date
+                            or row.get("exchange") != exchange.upper()
+                            or row.get("symbol") != symbol
+                        ):
+                            continue
+                        for field in ("close", "preclose"):
+                            try:
+                                value = float(row.get(field, ""))
+                            except (TypeError, ValueError):
+                                continue
+                            if math.isfinite(value) and value > 0.0:
+                                return {
+                                    "date": candidate_date,
+                                    "field": field,
+                                    "price": value,
+                                    "path": self._relative_path(path),
+                                    "sha256": _sha256_file(path),
+                                }
+            except (OSError, UnicodeDecodeError, csv.Error) as exc:
+                raise ProfileSnapshotError(
+                    f"cannot read prior profile source {path}: {exc}"
+                ) from exc
+        return None
 
     def _validate_csv(
         self, path: Path, exchange: str, trade_date: str
