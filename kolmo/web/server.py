@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from kolmo.paths import data_path
+from kolmo.web.fundamentals import FundamentalStore
 from kolmo.web.market_data import MarketStore, _iso_date
 
 
@@ -46,7 +47,7 @@ def _integer(value: str, default: int, low: int, high: int) -> int:
     return parsed
 
 
-def handler_factory(store: MarketStore, frontend_root: Path):
+def handler_factory(store: MarketStore, fundamentals: FundamentalStore, frontend_root: Path):
     class Handler(BaseHTTPRequestHandler):
         server_version = "KolmoMarket/1.0"
 
@@ -137,6 +138,31 @@ def handler_factory(store: MarketStore, frontend_root: Path):
                     )
                     self.send_json(200, payload)
                     return
+                if parsed.path == "/api/v1/fundamentals/summary":
+                    self.send_json(200, fundamentals.summary(_one(query, "symbol")))
+                    return
+                if parsed.path == "/api/v1/fundamentals/facts":
+                    limit = _integer(_one(query, "limit"), 100, 1, 250)
+                    offset = _integer(_one(query, "offset"), 0, 0, 1000000)
+                    self.send_json(200, fundamentals.facts(
+                        _one(query, "symbol"), _one(query, "q"),
+                        _one(query, "taxonomy"), _one(query, "unit"),
+                        _one(query, "form"), limit, offset,
+                    ))
+                    return
+                if parsed.path == "/api/v1/fundamentals/filings":
+                    limit = _integer(_one(query, "limit"), 100, 1, 250)
+                    offset = _integer(_one(query, "offset"), 0, 0, 1000000)
+                    self.send_json(200, fundamentals.filings(
+                        _one(query, "symbol"), _one(query, "form"), limit, offset,
+                    ))
+                    return
+                if parsed.path == "/api/v1/fundamentals/series":
+                    self.send_json(200, fundamentals.series(
+                        _one(query, "symbol"), _one(query, "taxonomy"),
+                        _one(query, "tag"), _one(query, "unit"),
+                    ))
+                    return
                 if parsed.path.startswith("/api/"):
                     self.send_json(404, {"error": "API route not found"})
                     return
@@ -157,7 +183,10 @@ def main(argv: list[str] | None = None) -> int:
     root = Path(args.data_root) if args.data_root else data_path()
     frontend = Path(args.frontend_root) if args.frontend_root else DEFAULT_FRONTEND
     store = MarketStore(root, PROJECT_ROOT)
-    server = ThreadingHTTPServer((args.host, args.port), handler_factory(store, frontend))
+    fundamentals = FundamentalStore(root)
+    server = ThreadingHTTPServer(
+        (args.host, args.port), handler_factory(store, fundamentals, frontend)
+    )
     browser_host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
     url = f"http://{browser_host}:{args.port}"
     print(f"Kolmo Market Terminal: {url}  data={root}", flush=True)

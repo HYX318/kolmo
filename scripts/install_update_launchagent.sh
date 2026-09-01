@@ -10,11 +10,11 @@ wrapper="$kolmo_root/scripts/update_cn_profile_daily_scheduled.sh"
 usage() {
     cat <<EOF
 Usage:
-  scripts/install_update_launchagent.sh install    Install and load the 17:00 scheduled update.
+  scripts/install_update_launchagent.sh install    Install and load the 18:30 scheduled update.
   scripts/install_update_launchagent.sh uninstall  Unload and remove the LaunchAgent.
   scripts/install_update_launchagent.sh print      Print the plist path and current launchctl state.
 
-The job runs every day at 17:00 local time. The wrapper checks the A-share
+The job runs every day at 18:30 local time. The wrapper checks the A-share
 trading calendar before updating, so weekends and exchange holidays are skipped.
 EOF
 }
@@ -36,9 +36,9 @@ install_agent() {
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key>
-    <integer>17</integer>
+    <integer>18</integer>
     <key>Minute</key>
-    <integer>0</integer>
+    <integer>30</integer>
   </dict>
   <key>RunAtLoad</key>
   <false/>

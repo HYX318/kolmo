@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import MarketChart from './MarketChart'
+import Fundamentals from './Fundamentals'
 import { loadBars, searchInstruments } from './api'
 
 const INTERVALS = [
@@ -30,7 +31,9 @@ function Metric({ label, value, tone = '' }) {
 }
 
 function App() {
+  const [view, setView] = useState('market')
   const [symbol, setSymbol] = useState('AAPL')
+  const [selectedName, setSelectedName] = useState('Apple Inc.')
   const [interval, setInterval] = useState('1d')
   const [range, setRange] = useState('5Y')
   const [price, setPrice] = useState('adjusted')
@@ -45,17 +48,18 @@ function App() {
   useEffect(() => {
     const controller = new AbortController()
     const timer = setTimeout(() => {
-      searchInstruments(query, market, controller.signal)
-        .then((result) => setInstruments(result.instruments))
+      searchInstruments(query, view === 'fundamentals' ? 'US' : market, controller.signal)
+        .then((result) => setInstruments(view === 'fundamentals' ? result.instruments.filter((item) => item.has_fundamentals) : result.instruments))
         .catch((reason) => reason.name !== 'AbortError' && setError(reason.message))
     }, query ? 140 : 0)
     return () => {
       clearTimeout(timer)
       controller.abort()
     }
-  }, [query, market])
+  }, [query, market, view])
 
   useEffect(() => {
+    if (view !== 'market') return undefined
     const controller = new AbortController()
     let active = true
     setLoading(true)
@@ -72,7 +76,7 @@ function App() {
       active = false
       controller.abort()
     }
-  }, [symbol, interval, range, price])
+  }, [symbol, interval, range, price, view])
 
   const onHover = useCallback((bar) => setHover(bar), [])
   const quote = payload?.quote
@@ -89,9 +93,20 @@ function App() {
 
   const chooseInstrument = (item) => {
     setSymbol(item.symbol)
+    setSelectedName(item.name)
     setMarket(item.market)
     if (item.market === 'CN') setPrice('adjusted')
     setQuery('')
+  }
+
+  const chooseView = (next) => {
+    setView(next)
+    setError('')
+    if (next === 'fundamentals' && (market === 'CN' || !instruments.find((item) => item.symbol === symbol && item.has_fundamentals))) {
+      setSymbol('AAPL')
+      setSelectedName('Apple Inc.')
+      setMarket('US')
+    }
   }
 
   return (
@@ -102,11 +117,16 @@ function App() {
           <div><b>KOLMO</b><span>MARKET TERMINAL</span></div>
         </div>
 
-        <div className="market-switch" role="group" aria-label="市场筛选">
+        <nav className="workspace-nav" aria-label="工作区">
+          <button className={view === 'market' ? 'active' : ''} onClick={() => chooseView('market')}><span>⌁</span>行情图表</button>
+          <button className={view === 'fundamentals' ? 'active' : ''} onClick={() => chooseView('fundamentals')}><span>▤</span>SEC 基本面</button>
+        </nav>
+
+        {view === 'market' && <div className="market-switch" role="group" aria-label="市场筛选">
           {[['US', '美股'], ['CN', 'A股'], ['ALL', '全部']].map(([value, label]) => (
             <button key={value} className={market === value ? 'active' : ''} onClick={() => setMarket(value)}>{label}</button>
           ))}
-        </div>
+        </div>}
 
         <label className="search-box">
           <span>⌕</span>
@@ -119,14 +139,14 @@ function App() {
             <button key={`${item.market}-${item.symbol}`} className={`instrument ${symbol === item.symbol ? 'selected' : ''}`} onClick={() => chooseInstrument(item)}>
               <span className="ticker">{item.symbol}</span>
               <span className="company">{item.name}</span>
-              <span className={`market-tag ${item.market.toLowerCase()}`}>{item.market === 'CN' ? 'CN' : item.asset_type}</span>
+              <span className={`market-tag ${item.market.toLowerCase()}`}>{view === 'fundamentals' ? 'SEC' : item.market === 'CN' ? 'CN' : item.asset_type}</span>
             </button>
           ))}
         </div>
         <div className="sidebar-foot"><i /> 本地数据 · 只读模式</div>
       </aside>
 
-      <main className="workspace">
+      {view === 'fundamentals' ? <main className="workspace"><Fundamentals symbol={symbol} title={selectedName} /></main> : <main className="workspace">
         <header className="topbar">
           <div>
             <div className="eyebrow">{marketLabel} / {payload?.instrument?.sector || 'MARKET DATA'}</div>
@@ -168,7 +188,7 @@ function App() {
         </section>
 
         <footer><span>数据源：{payload?.instrument?.market === 'CN' ? 'BaoStock' : 'Tiingo EOD'}</span><span>滚轮缩放 · 拖动平移 · 十字线查看 OHLC</span></footer>
-      </main>
+      </main>}
     </div>
   )
 }

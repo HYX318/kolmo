@@ -1,8 +1,12 @@
 import csv
+import io
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+from kolmo.ashare import profile_health_check
 from kolmo.ashare.profile_health_check import check_file, discover_dates, enrich_status, profile_path
 
 
@@ -63,6 +67,32 @@ class ProfileHealthCheckTest(unittest.TestCase):
         self.assertFalse(records[1]["ok"])
         self.assertIn("low_rows", records[1]["issues"])
         self.assertIn("fetch_failures", records[1]["issues"])
+
+    def test_expected_trading_date_prevents_stale_data_from_passing(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            row = {
+                "date": "20260828", "symbol": "000001.SZ", "exchange": "SZ",
+                "board": "main", "open": "1", "high": "1", "low": "1", "close": "1",
+                "volume": "1", "amount": "1", "trade_status": "1", "is_st": "0",
+                "source": "test",
+            }
+            write_profile(profile_path(root, "sz", "20260828"), [row])
+            write_profile(
+                profile_path(root, "sh", "20260828"),
+                [{**row, "symbol": "600000.SH", "exchange": "SH"}],
+            )
+            output = io.StringIO()
+            argv = [
+                "health", "--profile-root", str(root), "--days", "20",
+                "--min-absolute-rows", "1", "--expected-latest-date", "20260831",
+            ]
+            with patch("sys.argv", argv), patch("sys.stdout", output):
+                self.assertEqual(profile_health_check.main(), 1)
+            summary = json.loads(output.getvalue())
+            self.assertEqual(summary["latest_date"], "20260828")
+            self.assertEqual(summary["expected_latest_date"], "20260831")
+            self.assertFalse(summary["freshness_ok"])
 
 
 if __name__ == "__main__":

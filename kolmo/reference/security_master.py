@@ -4,11 +4,19 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping
 
 from kolmo.ashare.board_rules import board_for_symbol
+from kolmo.ashare.fetch_baostock_daily import (
+    close_baostock_socket,
+    hard_deadline,
+    latest_cached_universe,
+    login_baostock,
+    read_universe,
+)
 from kolmo.data_products import SECURITY_MASTER_COLUMNS, is_a_share_symbol, normalize_date
 from kolmo.paths import data_path
 from kolmo.reference.common import write_csv_atomic
@@ -22,6 +30,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a BaoStock observed A-share security-master snapshot.")
     parser.add_argument("--as-of-date", default=date.today().strftime("%Y%m%d"), help="Observation date, YYYYMMDD or YYYY-MM-DD.")
     parser.add_argument("--output", default="", help="Default: $KOLMO_DATA_ROOT/reference/ashare/security_master/observed/YYYY/MM/YYYYMMDD.csv.")
+    parser.add_argument("--operation-timeout-seconds", type=float, default=15.0)
+    parser.add_argument("--max-universe-age-days", type=float, default=7.0)
     return parser.parse_args()
 
 
@@ -43,7 +53,8 @@ def rows_from_result(result) -> Iterable[Mapping[str, str]]:
 
 
 def normalize_rows(
-    rows: Iterable[Mapping[str, str]], as_of_date: str, observed_at: str
+    rows: Iterable[Mapping[str, str]], as_of_date: str, observed_at: str,
+    source: str = "baostock.query_stock_basic",
 ) -> list[dict[str, str]]:
     normalized: list[dict[str, str]] = []
     for row in rows:
@@ -81,7 +92,7 @@ def normalize_rows(
                 "base_price_limit_pct": base_limit,
                 "price_limit_rule": rule,
                 "price_limit_status": limit_status,
-                "source": "baostock.query_stock_basic",
+                "source": source,
             }
         )
     return sorted(normalized, key=lambda item: item["symbol"])
@@ -95,6 +106,42 @@ def require_baostock():
     return bs
 
 
+def cached_basic_rows(max_age_days: float) -> tuple[list[dict[str, str]], str]:
+    rows: list[dict[str, str]] = []
+    paths: list[Path] = []
+    for exchange in ("sz", "sh"):
+        path = latest_cached_universe(exchange, max_age_days)
+        paths.append(path)
+        for stock in read_universe(path, exchange):
+            rows.append(
+                {
+                    "code": stock.bs_code,
+                    "code_name": stock.name,
+                    "ipoDate": stock.listing_date,
+                    "outDate": stock.delisting_date,
+                }
+            )
+    return rows, "cached_universe:" + ",".join(str(path) for path in paths)
+
+
+def load_basic_rows(bs, timeout_seconds: float, max_age_days: float) -> tuple[list[Mapping[str, str]], str]:
+    try:
+        login_baostock(bs, timeout_seconds)
+        with hard_deadline(timeout_seconds):
+            result = bs.query_stock_basic()
+            if result.error_code != "0":
+                raise RuntimeError(f"query_stock_basic failed: {result.error_code} {result.error_msg}")
+            rows = list(rows_from_result(result))
+        if not rows:
+            raise RuntimeError("query_stock_basic returned no rows")
+        return rows, "baostock.query_stock_basic"
+    except Exception as exc:
+        print(f"security-master live universe failed; using cached universes: {exc}", file=sys.stderr)
+        return cached_basic_rows(max_age_days)
+    finally:
+        close_baostock_socket()
+
+
 def main() -> int:
     args = parse_args()
     as_of_date = normalize_date(args.as_of_date)
@@ -102,16 +149,12 @@ def main() -> int:
         "reference", "ashare", "security_master", "observed", as_of_date[:4], as_of_date[4:6], f"{as_of_date}.csv"
     )
     bs = require_baostock()
-    login = bs.login()
-    if login.error_code != "0":
-        raise RuntimeError(f"baostock login failed: {login.error_code} {login.error_msg}")
-    try:
-        result = bs.query_stock_basic()
-        if result.error_code != "0":
-            raise RuntimeError(f"query_stock_basic failed: {result.error_code} {result.error_msg}")
-        rows = normalize_rows(rows_from_result(result), as_of_date, utc_now())
-    finally:
-        bs.logout()
+    basic_rows, source = load_basic_rows(
+        bs,
+        args.operation_timeout_seconds,
+        args.max_universe_age_days,
+    )
+    rows = normalize_rows(basic_rows, as_of_date, utc_now(), source)
     write_csv_atomic(output, SECURITY_MASTER_COLUMNS, rows)
     print(f"rows={len(rows)} output={output}")
     return 0

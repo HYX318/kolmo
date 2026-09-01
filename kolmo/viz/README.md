@@ -34,6 +34,14 @@ Open `http://127.0.0.1:8765`. The UI supports:
 - one-, three-, five-year and complete-history ranges
 - raw/adjusted US prices and BaoStock qfq A-share prices
 - candlestick, volume, crosshair, zoom, and pan interactions
+- SEC filing-history browsing for US stocks with local canonical data
+- raw XBRL fact filtering by taxonomy, text, unit, and filing form
+- exact taxonomy/tag/unit history charts with amendments retained
+
+The SEC view is a data inspection surface, not a financial-statement mapper.
+It displays report-period and availability dates separately and does not decide
+which company-specific XBRL tag represents revenue, earnings, or another
+strategy concept.
 
 The API caches parsed gzip files by path, modification time, and size. Updated
 files are picked up automatically without restarting the service. JSON payloads

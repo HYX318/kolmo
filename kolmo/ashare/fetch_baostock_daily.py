@@ -9,14 +9,17 @@ import gzip
 import hashlib
 import json
 import os
+import signal
+import socket
 import sys
 import tempfile
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable, Iterator, TypeVar
 
 from kolmo.ashare.board_rules import board_for_symbol
 from kolmo.paths import data_path
@@ -70,6 +73,21 @@ NORMALIZED_COLUMNS = [
     "source",
 ]
 
+T = TypeVar("T")
+_deadline_was_triggered = False
+
+
+class BaoStockDeadlineError(TimeoutError):
+    """Raised when BaoStock fails to complete one operation before its deadline."""
+
+
+class TerminationRequested(BaseException):
+    """Raised when the supervisor asks this fetch process to terminate."""
+
+    def __init__(self, signum: int) -> None:
+        super().__init__(f"termination requested by signal {signum}")
+        self.signum = signum
+
 
 @dataclass(frozen=True)
 class StockInfo:
@@ -118,6 +136,23 @@ def parse_args() -> argparse.Namespace:
         help="Universe CSV path. Default is under KOLMO_DATA_ROOT/raw/ashare/baostock/{exchange}/.",
     )
     parser.add_argument(
+        "--universe-input",
+        default="",
+        help="Use this cached universe CSV instead of querying BaoStock.",
+    )
+    parser.add_argument(
+        "--universe-fallback",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Fall back to the latest recent local universe if the live query fails.",
+    )
+    parser.add_argument(
+        "--max-universe-age-days",
+        type=float,
+        default=7.0,
+        help="Maximum age of an automatic cached-universe fallback. Default: 7 days.",
+    )
+    parser.add_argument(
         "--failures-output",
         default="",
         help="Failure manifest path. Default is a run-scoped file beside the universe CSV.",
@@ -157,6 +192,36 @@ def parse_args() -> argparse.Namespace:
         default=10_000,
         help="Abort one malformed BaoStock result after this many rows and continue. Default: 10000.",
     )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=15.0,
+        help="Hard deadline for one BaoStock login/query operation. Default: 15 seconds.",
+    )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=1,
+        help="Reconnect and retry one failed BaoStock operation this many times. Default: 1.",
+    )
+    parser.add_argument(
+        "--retry-backoff-seconds",
+        type=float,
+        default=1.0,
+        help="Initial exponential retry delay. Default: 1 second.",
+    )
+    parser.add_argument(
+        "--max-consecutive-failures",
+        type=int,
+        default=3,
+        help="Abort the exchange after this many consecutive symbol failures. Default: 3.",
+    )
+    parser.add_argument(
+        "--heartbeat-symbols",
+        type=int,
+        default=50,
+        help="Persist running evidence after this many processed symbols. Default: 50.",
+    )
     parser.add_argument("--no-combine", action="store_true", help="Only write raw per-symbol files.")
     parser.add_argument(
         "--compress-raw",
@@ -178,6 +243,106 @@ def require_dependencies():
         )
         raise SystemExit(2) from exc
     return bs
+
+
+def _deadline_expired(_signum, _frame) -> None:
+    global _deadline_was_triggered
+    _deadline_was_triggered = True
+    raise BaoStockDeadlineError("BaoStock operation exceeded its hard deadline")
+
+
+def _termination_requested(signum, _frame) -> None:
+    raise TerminationRequested(signum)
+
+
+@contextmanager
+def hard_deadline(seconds: float) -> Iterator[None]:
+    """Interrupt BaoStock's EOF busy loop as well as ordinary blocking socket reads."""
+    global _deadline_was_triggered
+    if seconds <= 0:
+        raise ValueError("timeout seconds must be positive")
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_triggered = _deadline_was_triggered
+    _deadline_was_triggered = False
+    signal.signal(signal.SIGALRM, _deadline_expired)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+        if _deadline_was_triggered:
+            raise BaoStockDeadlineError("BaoStock operation exceeded its hard deadline")
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        _deadline_was_triggered = previous_triggered
+
+
+def close_baostock_socket() -> None:
+    """Close BaoStock's process-global connection without another network call."""
+    try:
+        import baostock.common.context as context  # type: ignore
+    except ModuleNotFoundError:
+        return
+    connection = getattr(context, "default_socket", None)
+    if connection is not None:
+        try:
+            connection.close()
+        finally:
+            setattr(context, "default_socket", None)
+
+
+def login_baostock(bs, timeout_seconds: float) -> None:
+    close_baostock_socket()
+    with hard_deadline(timeout_seconds):
+        login = bs.login()
+    if login.error_code != "0":
+        close_baostock_socket()
+        raise RuntimeError(f"baostock login failed: {login.error_code} {login.error_msg}")
+
+
+def login_baostock_with_retry(
+    bs,
+    timeout_seconds: float,
+    retries: int,
+    retry_backoff_seconds: float,
+) -> None:
+    last_error: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            login_baostock(bs, timeout_seconds)
+            return
+        except Exception as exc:
+            last_error = exc
+            close_baostock_socket()
+            if attempt < retries and retry_backoff_seconds:
+                time.sleep(retry_backoff_seconds * (2**attempt))
+    assert last_error is not None
+    raise RuntimeError(f"initial BaoStock login failed after {retries + 1} attempts: {last_error}") from last_error
+
+
+def run_with_reconnect(
+    bs,
+    operation: Callable[[], T],
+    *,
+    context: str,
+    timeout_seconds: float,
+    retries: int,
+    retry_backoff_seconds: float,
+) -> T:
+    """Run one operation with a hard deadline and a fresh session after failures."""
+    last_error: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            if attempt:
+                login_baostock(bs, timeout_seconds)
+            with hard_deadline(timeout_seconds):
+                return operation()
+        except Exception as exc:
+            last_error = exc
+            close_baostock_socket()
+            if attempt < retries and retry_backoff_seconds:
+                time.sleep(retry_backoff_seconds * (2**attempt))
+    assert last_error is not None
+    raise RuntimeError(f"{context} failed after {retries + 1} attempts: {last_error}") from last_error
 
 
 def normalize_date(value: str) -> str:
@@ -271,6 +436,23 @@ def raw_cache_has_required_fields(path: Path) -> bool:
         return False
 
 
+def raw_cache_covers_requested_end(path: Path, stock: StockInfo, end_date: str) -> bool:
+    """Reject a resumable cache that stopped before its expected final date."""
+    expected = normalize_date(end_date)
+    if stock.delisting_date:
+        expected = min(expected, normalize_date(stock.delisting_date))
+    latest = ""
+    try:
+        with open_text(path, "rt") as file:
+            for row in csv.DictReader(file):
+                row_date = normalize_date(row.get("date", ""))
+                if row_date > latest:
+                    latest = row_date
+    except (OSError, UnicodeError, csv.Error):
+        return False
+    return bool(latest and latest >= expected)
+
+
 def open_text(path: Path, mode: str):
     if path.suffix == ".gz":
         return gzip.open(path, mode, encoding="utf-8", newline="")
@@ -345,6 +527,8 @@ def load_universe(
             )
         )
 
+    if not stocks:
+        raise RuntimeError(f"query_stock_basic returned an empty {exchange} stock universe")
     return sorted(stocks, key=lambda stock: stock.code)
 
 
@@ -369,10 +553,46 @@ def write_universe(path: Path, stocks: Iterable[StockInfo]) -> None:
             writer.writerow(stock.__dict__)
 
 
+def read_universe(path: Path, exchange: str) -> list[StockInfo]:
+    stocks: list[StockInfo] = []
+    with path.open("r", encoding="utf-8", newline="") as file:
+        reader = csv.DictReader(file)
+        required = set(StockInfo.__dataclass_fields__)
+        if not reader.fieldnames or not required.issubset(reader.fieldnames):
+            raise ValueError(f"cached universe has invalid columns: {path}")
+        for row in reader:
+            stock = StockInfo(**{field: row.get(field, "") for field in required})
+            if stock.bs_code.startswith(f"{exchange}.") and stock.symbol.endswith(f".{exchange.upper()}"):
+                stocks.append(stock)
+    symbols = [stock.symbol for stock in stocks]
+    if not stocks or len(symbols) != len(set(symbols)):
+        raise ValueError(f"cached universe is empty or has duplicate symbols: {path}")
+    return sorted(stocks, key=lambda stock: stock.code)
+
+
+def latest_cached_universe(exchange: str, max_age_days: float) -> Path:
+    root = data_path("raw", "ashare", "baostock", exchange)
+    candidates = [path for path in root.glob(f"universe_{exchange}_*.csv") if path.is_file()]
+    if not candidates:
+        raise FileNotFoundError(f"no cached {exchange} universe found under {root}")
+    latest = max(candidates, key=lambda path: path.stat().st_mtime)
+    age_seconds = max(0.0, time.time() - latest.stat().st_mtime)
+    if age_seconds > max_age_days * 86400:
+        raise RuntimeError(
+            f"latest cached {exchange} universe is {age_seconds / 86400:.1f} days old; "
+            f"limit={max_age_days:g}: {latest}"
+        )
+    return latest
+
+
 def fetch_symbol(bs, stock: StockInfo, args: argparse.Namespace, raw_dir: Path) -> tuple[Path, str]:
     if args.resume:
         existing_path = existing_raw_cache_path(raw_dir, args.adjust, stock.symbol)
-        if existing_path is not None and raw_cache_has_required_fields(existing_path):
+        if (
+            existing_path is not None
+            and raw_cache_has_required_fields(existing_path)
+            and raw_cache_covers_requested_end(existing_path, stock, args.end_date)
+        ):
             return existing_path, "cached"
     path = raw_cache_path(raw_dir, args.adjust, stock.symbol, args.compress_raw)
 
@@ -388,11 +608,17 @@ def fetch_symbol(bs, stock: StockInfo, args: argparse.Namespace, raw_dir: Path) 
         f"query_history_k_data_plus {stock.bs_code}",
     )
 
+    rows = rows_from_result(result, args.max_rows_per_symbol)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open_text(path, "wt") as file:
-        writer = csv.writer(file, lineterminator="\n")
-        writer.writerow(result.fields)
-        writer.writerows(rows_from_result(result, args.max_rows_per_symbol))
+    temporary_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp{path.suffix}")
+    try:
+        with open_text(temporary_path, "wt") as file:
+            writer = csv.writer(file, lineterminator="\n")
+            writer.writerow(result.fields)
+            writer.writerows(rows)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
     return path, "fetched"
 
@@ -453,6 +679,18 @@ def append_normalized(
 
 def main() -> int:
     args = parse_args()
+    if args.timeout_seconds <= 0:
+        raise ValueError("--timeout-seconds must be positive")
+    if args.retries < 0:
+        raise ValueError("--retries must not be negative")
+    if args.retry_backoff_seconds < 0:
+        raise ValueError("--retry-backoff-seconds must not be negative")
+    if args.max_consecutive_failures < 1:
+        raise ValueError("--max-consecutive-failures must be at least 1")
+    if args.heartbeat_symbols < 1:
+        raise ValueError("--heartbeat-symbols must be at least 1")
+    if args.max_universe_age_days <= 0:
+        raise ValueError("--max-universe-age-days must be positive")
     bs = require_dependencies()
 
     run_id = args.run_id.strip() or uuid.uuid4().hex
@@ -492,13 +730,35 @@ def main() -> int:
     }
     write_atomic_json(evidence_output, evidence)
 
-    login = bs.login()
-    if login.error_code != "0":
+    previous_socket_timeout = socket.getdefaulttimeout()
+    previous_term_handler = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGTERM, _termination_requested)
+    socket.setdefaulttimeout(args.timeout_seconds)
+    try:
+        login_baostock_with_retry(
+            bs,
+            args.timeout_seconds,
+            args.retries,
+            args.retry_backoff_seconds,
+        )
+    except TerminationRequested as exc:
+        close_baostock_socket()
+        evidence["status"] = "aborted"
+        evidence["completed_at"] = utc_now()
+        evidence["error"] = str(exc)
+        write_atomic_json(evidence_output, evidence)
+        socket.setdefaulttimeout(previous_socket_timeout)
+        signal.signal(signal.SIGTERM, previous_term_handler)
+        return 128 + exc.signum
+    except Exception as exc:
+        close_baostock_socket()
         evidence["status"] = "login_failed"
         evidence["completed_at"] = utc_now()
-        evidence["error"] = f"{login.error_code} {login.error_msg}"
+        evidence["error"] = str(exc)
         write_atomic_json(evidence_output, evidence)
-        print(f"baostock login failed: {login.error_code} {login.error_msg}", file=sys.stderr)
+        print(str(exc), file=sys.stderr)
+        socket.setdefaulttimeout(previous_socket_timeout)
+        signal.signal(signal.SIGTERM, previous_term_handler)
         return 2
 
     try:
@@ -521,13 +781,41 @@ def main() -> int:
             )
         )
 
-        stocks = load_universe(
-            bs,
-            start_date=start_date,
-            end_date=end_date,
-            include_delisted=args.include_delisted,
-            exchange=args.exchange,
-        )
+        universe_source = "live"
+        universe_source_path = ""
+        if args.universe_input:
+            cached_path = Path(args.universe_input)
+            stocks = read_universe(cached_path, args.exchange)
+            universe_source = "explicit_cache"
+            universe_source_path = str(cached_path.resolve())
+        else:
+            try:
+                stocks = run_with_reconnect(
+                    bs,
+                    lambda: load_universe(
+                        bs,
+                        start_date=start_date,
+                        end_date=end_date,
+                        include_delisted=args.include_delisted,
+                        exchange=args.exchange,
+                    ),
+                    context="load universe",
+                    timeout_seconds=args.timeout_seconds,
+                    retries=args.retries,
+                    retry_backoff_seconds=args.retry_backoff_seconds,
+                )
+            except Exception as live_error:
+                if not args.universe_fallback:
+                    raise
+                cached_path = latest_cached_universe(args.exchange, args.max_universe_age_days)
+                stocks = read_universe(cached_path, args.exchange)
+                universe_source = "automatic_cache_fallback"
+                universe_source_path = str(cached_path.resolve())
+                print(
+                    f"warning: live universe failed ({live_error}); using cached universe={cached_path}",
+                    file=sys.stderr,
+                    flush=True,
+                )
         symbols = {symbol.upper() for symbol in args.symbol or []}
         if symbols:
             stocks = [stock for stock in stocks if stock.symbol in symbols]
@@ -537,6 +825,15 @@ def main() -> int:
         if args.limit > 0:
             stocks = stocks[: args.limit]
         write_universe(universe_output, stocks)
+        evidence["symbols"]["total"] = len(stocks)
+        evidence["universe"] = {
+            "source": universe_source,
+            "source_path": universe_source_path,
+            "output_path": str(universe_output.resolve()),
+            "output_sha256": sha256_file(universe_output),
+        }
+        evidence["last_progress_at"] = utc_now()
+        write_atomic_json(evidence_output, evidence)
 
         if clean_output.exists() and not args.no_combine:
             clean_output.unlink()
@@ -544,6 +841,7 @@ def main() -> int:
         fetched = 0
         cached = 0
         failed = 0
+        consecutive_failures = 0
         total_rows = 0
         temporary_failures = failure_temp_path(failures_output)
 
@@ -558,9 +856,17 @@ def main() -> int:
 
                 for index, stock in enumerate(stocks, start=1):
                     try:
-                        raw_path, source_state = fetch_symbol(bs, stock, args, raw_dir)
+                        raw_path, source_state = run_with_reconnect(
+                            bs,
+                            lambda: fetch_symbol(bs, stock, args, raw_dir),
+                            context=f"fetch {stock.symbol}",
+                            timeout_seconds=args.timeout_seconds,
+                            retries=args.retries,
+                            retry_backoff_seconds=args.retry_backoff_seconds,
+                        )
                         fetched += 1 if source_state == "fetched" else 0
                         cached += 1 if source_state == "cached" else 0
+                        consecutive_failures = 0
                         rows = 0
                         if not args.no_combine:
                             rows = append_normalized(
@@ -574,10 +880,39 @@ def main() -> int:
                         )
                     except Exception as exc:
                         failed += 1
+                        consecutive_failures += 1
                         failure_writer.writerow(
                             {"symbol": stock.symbol, "status": stock.status, "error": repr(exc)}
                         )
                         print(f"[{index}/{len(stocks)}] {stock.symbol} failed: {exc}", file=sys.stderr)
+
+                        if consecutive_failures >= args.max_consecutive_failures:
+                            remaining = stocks[index:]
+                            for skipped in remaining:
+                                failure_writer.writerow(
+                                    {
+                                        "symbol": skipped.symbol,
+                                        "status": skipped.status,
+                                        "error": "circuit_open_after_consecutive_failures",
+                                    }
+                                )
+                            failed += len(remaining)
+                            print(
+                                f"aborting exchange after {consecutive_failures} consecutive failures; "
+                                f"remaining={len(remaining)}",
+                                file=sys.stderr,
+                                flush=True,
+                            )
+                            break
+
+                    if index % args.heartbeat_symbols == 0:
+                        evidence["symbols"].update(
+                            {"fetched": fetched, "cached": cached, "failed": failed}
+                        )
+                        evidence["rows"] = total_rows
+                        evidence["last_symbol"] = stock.symbol
+                        evidence["last_progress_at"] = utc_now()
+                        write_atomic_json(evidence_output, evidence)
 
                     if args.sleep > 0:
                         time.sleep(args.sleep)
@@ -587,9 +922,14 @@ def main() -> int:
         finally:
             temporary_failures.unlink(missing_ok=True)
 
+        completed_empty = failed == 0 and not args.no_combine and total_rows == 0
         evidence.update(
             {
-                "status": "completed" if failed == 0 else "completed_with_failures",
+                "status": (
+                    "completed_empty"
+                    if completed_empty
+                    else "completed" if failed == 0 else "completed_with_failures"
+                ),
                 "completed_at": utc_now(),
                 "failure_manifest_sha256": sha256_file(failures_output),
                 "symbols": {
@@ -601,6 +941,8 @@ def main() -> int:
                 "rows": total_rows,
             }
         )
+        if completed_empty:
+            evidence["error"] = "BaoStock returned zero rows for the requested exchange window"
         write_atomic_json(evidence_output, evidence)
 
         print(
@@ -610,9 +952,25 @@ def main() -> int:
             f"evidence={evidence_output} "
             f"clean={'' if args.no_combine else clean_output}"
         )
-        return 0 if failed == 0 else 1
+        return 0 if failed == 0 and not completed_empty else 1
+    except TerminationRequested as exc:
+        evidence["status"] = "aborted"
+        evidence["completed_at"] = utc_now()
+        evidence["error"] = str(exc)
+        write_atomic_json(evidence_output, evidence)
+        print(str(exc), file=sys.stderr)
+        return 128 + exc.signum
+    except Exception as exc:
+        evidence["status"] = "failed"
+        evidence["completed_at"] = utc_now()
+        evidence["error"] = repr(exc)
+        write_atomic_json(evidence_output, evidence)
+        print(f"BaoStock fetch aborted: {exc}", file=sys.stderr)
+        return 1
     finally:
-        bs.logout()
+        close_baostock_socket()
+        socket.setdefaulttimeout(previous_socket_timeout)
+        signal.signal(signal.SIGTERM, previous_term_handler)
 
 
 if __name__ == "__main__":
