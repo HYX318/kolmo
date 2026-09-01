@@ -241,7 +241,7 @@ class MarketStore:
         self._instruments = output
         return output
 
-    def search(self, query: str, market: str, limit: int = 30) -> list[dict[str, str]]:
+    def search(self, query: str, market: str, limit: int = 30) -> list[dict[str, object]]:
         text = query.strip().upper()
         candidates = [
             instrument for instrument in self.instruments().values()
@@ -261,7 +261,17 @@ class MarketStore:
             )
         else:
             candidates.sort(key=lambda item: (item.market != "US", item.symbol))
-        return [asdict(item) for item in candidates[:limit]]
+        output = []
+        for item in candidates[:limit]:
+            record = asdict(item)
+            record["has_fundamentals"] = (
+                item.market == "US"
+                and item.asset_type == "STK"
+                and (self.root / "fundamental" / "us" / "sec" / "company_facts" / f"{item.symbol}.csv.gz").is_file()
+                and (self.root / "fundamental" / "us" / "sec" / "filings" / f"{item.symbol}.csv.gz").is_file()
+            )
+            output.append(record)
+        return output
 
     def _path(self, instrument: Instrument) -> Path:
         if instrument.market == "US":

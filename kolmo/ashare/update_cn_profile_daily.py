@@ -7,7 +7,6 @@ import argparse
 import csv
 import gzip
 import os
-import subprocess
 import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -15,6 +14,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from kolmo.paths import data_path
+from kolmo.scheduler.process_timeout import run_with_timeout
 
 
 def repo_root() -> Path:
@@ -79,6 +79,12 @@ def parse_args() -> argparse.Namespace:
         help="Parallel workers for merging independent per-symbol gzip caches.",
     )
     parser.add_argument(
+        "--exchange-timeout-seconds",
+        type=float,
+        default=1800.0,
+        help="Maximum wall time for one exchange fetch/build subprocess. Default: 1800 seconds.",
+    )
+    parser.add_argument(
         "--refresh-raw",
         action="store_true",
         help="With --target raw, fetch a new window before merging instead of reusing an existing window.",
@@ -134,9 +140,14 @@ def subtract_days(yyyymmdd: str, days: int) -> str:
     return (parsed - timedelta(days=days)).strftime("%Y%m%d")
 
 
-def run(command: list[str], cwd: Path) -> int:
+def run(command: list[str], cwd: Path, timeout_seconds: float = 1800.0) -> int:
     print("+ " + " ".join(command), flush=True)
-    return subprocess.run(command, cwd=str(cwd), check=False).returncode
+    return run_with_timeout(
+        command,
+        cwd=cwd,
+        timeout_seconds=timeout_seconds,
+        label="A-share exchange update",
+    )
 
 
 def read_gzip_rows(path: Path) -> tuple[list[str], dict[str, dict[str, str]]]:
@@ -292,7 +303,7 @@ def update_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
         if args.no_include_delisted:
             command.append("--no-include-delisted")
 
-        code = run(command, root)
+        code = run(command, root, args.exchange_timeout_seconds)
         if code != 0:
             return code
 
@@ -305,6 +316,8 @@ def update_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
 
 def main() -> int:
     args = parse_args()
+    if args.exchange_timeout_seconds <= 0:
+        raise ValueError("--exchange-timeout-seconds must be positive")
     root = repo_root()
     exchanges = ["sz", "sh"] if args.exchange == "all" else [args.exchange]
 

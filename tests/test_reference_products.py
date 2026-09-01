@@ -2,6 +2,7 @@ import csv
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from kolmo.data_products import (
     INDUSTRY_CLASSIFICATION_COLUMNS, SECURITY_MASTER_COLUMNS,
@@ -10,6 +11,7 @@ from kolmo.data_products import (
 from kolmo.reference.industry_classification import normalize_rows as normalize_industry_rows
 from kolmo.reference.common import write_csv_atomic
 from kolmo.reference.security_master import normalize_rows as normalize_security_rows
+from kolmo.reference.security_master import load_basic_rows
 from kolmo.reference.security_master import price_limit_rule
 from kolmo.reference.trading_calendar import normalize_rows as normalize_calendar_rows
 from kolmo.reference.trading_calendar import output_groups
@@ -17,6 +19,18 @@ from kolmo.reference.security_master_store import SecurityMasterUnavailableError
 
 
 class ReferenceProductTest(unittest.TestCase):
+    def test_security_master_falls_back_when_live_universe_fails(self) -> None:
+        class BrokenBaoStock:
+            @staticmethod
+            def login():
+                raise TimeoutError("provider stuck")
+
+        cached = ([{"code": "sz.000001"}], "cached_universe:test")
+        with patch("kolmo.reference.security_master.cached_basic_rows", return_value=cached):
+            rows, source = load_basic_rows(BrokenBaoStock(), 0.1, 7)
+        self.assertEqual(rows, cached[0])
+        self.assertEqual(source, cached[1])
+
     def test_industry_rows_are_date_effective_and_exclude_non_a_shares(self) -> None:
         rows = normalize_industry_rows(
             [

@@ -1,0 +1,19 @@
+{
+  "cik": 320193,
+  "name": "Apple Inc.",
+  "filings": {
+    "recent": {
+      "accessionNumber": ["0000320193-23-000106", "0000320193-23-000107", "0000320193-23-000099"],
+      "filingDate": ["2023-11-03", "2023-11-10", "2023-10-20"],
+      "reportDate": ["2023-09-30", "2023-09-30", "2023-09-30"],
+      "acceptanceDateTime": ["20231103183001", "20231110120000", "20231020120000"],
+      "form": ["10-K", "10-K/A", "4"],
+      "primaryDocument": ["aapl-20230930.htm", "aapl-20230930x10ka.htm", "xslF345X05/form4.xml"],
+      "isXBRL": [1, 1, 0],
+      "isInlineXBRL": [1, 1, 0]
+    },
+    "files": [
+      {"name": "CIK0000320193-submissions-001.json", "filingCount": 2}
+    ]
+  }
+}

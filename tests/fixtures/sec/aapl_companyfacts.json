@@ -1,0 +1,89 @@
+{
+  "cik": 320193,
+  "entityName": "Apple Inc.",
+  "facts": {
+    "dei": {
+      "EntityPublicFloat": {
+        "label": "Entity Public Float",
+        "description": "Public float at the measurement date.",
+        "units": {
+          "USD": [
+            {
+              "end": "2023-03-31",
+              "val": 255000000000.00000001,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03",
+              "frame": "CY2023Q1I"
+            }
+          ]
+        }
+      }
+    },
+    "us-gaap": {
+      "Revenues": {
+        "label": "Revenue",
+        "description": "Revenue from contracts with customers.",
+        "units": {
+          "USD": [
+            {
+              "start": "2022-09-25",
+              "end": "2023-09-30",
+              "val": 383285000000.123456789,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03",
+              "frame": "CY2023"
+            },
+            {
+              "start": "2022-09-25",
+              "end": "2023-09-30",
+              "val": 383284999999.123456789,
+              "accn": "0000320193-23-000107",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K/A",
+              "filed": "2023-11-10",
+              "frame": "CY2023"
+            }
+          ],
+          "USD/shares": [
+            {
+              "start": "2022-09-25",
+              "end": "2023-09-30",
+              "val": 24.42,
+              "accn": "0000320193-23-000106",
+              "fy": 2023,
+              "fp": "FY",
+              "form": "10-K",
+              "filed": "2023-11-03"
+            }
+          ]
+        }
+      },
+      "NetIncomeLoss": {
+        "label": "Net Income (Loss)",
+        "description": "Net income or loss.",
+        "units": {
+          "USD": [
+            {
+              "start": "2023-04-02",
+              "end": "2023-07-01",
+              "val": -1000000.000000001,
+              "accn": "0000320193-23-000064",
+              "fy": 2023,
+              "fp": "Q3",
+              "form": "10-Q",
+              "filed": "2023-08-04",
+              "frame": "CY2023Q2"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

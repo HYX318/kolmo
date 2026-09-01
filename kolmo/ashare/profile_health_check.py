@@ -44,7 +44,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--json-output", default="", help="Optional JSON report path.")
     parser.add_argument("--csv-output", default="", help="Optional per-date CSV report path.")
+    parser.add_argument(
+        "--expected-latest-date",
+        default="",
+        help="Required latest trading date, YYYYMMDD or YYYY-MM-DD. Missing data fails health.",
+    )
     return parser.parse_args()
+
+
+def normalize_date(value: str) -> str:
+    compact = value.replace("-", "")
+    if len(compact) != 8 or not compact.isdigit():
+        raise ValueError("expected latest date must be YYYYMMDD or YYYY-MM-DD")
+    return compact
 
 
 def discover_dates(profile_root: Path, exchanges: list[str]) -> list[str]:
@@ -191,7 +203,11 @@ def main() -> int:
     args = parse_args()
     exchanges = ["sz", "sh"]
     profile_root = Path(args.profile_root) if args.profile_root else data_path("profile", "daily")
-    dates = discover_dates(profile_root, exchanges)[-args.days :]
+    available_dates = discover_dates(profile_root, exchanges)
+    dates = available_dates[-args.days :]
+    expected_latest_date = normalize_date(args.expected_latest_date) if args.expected_latest_date else ""
+    if expected_latest_date and expected_latest_date not in dates:
+        dates = sorted({*dates, expected_latest_date})
     records: list[dict[str, object]] = []
     for trade_date in dates:
         for exchange in exchanges:
@@ -210,13 +226,16 @@ def main() -> int:
             records.append(record)
     enrich_status(records, args.min_row_ratio, args.min_absolute_rows)
     failed = [record for record in records if not record["ok"]]
-    latest_date = dates[-1] if dates else ""
+    latest_date = available_dates[-1] if available_dates else ""
+    freshness_ok = not expected_latest_date or expected_latest_date in available_dates
     report = {
         "profile_root": str(profile_root),
         "latest_date": latest_date,
+        "expected_latest_date": expected_latest_date,
+        "freshness_ok": freshness_ok,
         "dates_checked": len(dates),
         "records_checked": len(records),
-        "ok": not failed,
+        "ok": not failed and freshness_ok,
         "failed_records": len(failed),
         "records": records,
     }
@@ -230,6 +249,8 @@ def main() -> int:
         json.dumps(
             {
                 "latest_date": latest_date,
+                "expected_latest_date": expected_latest_date,
+                "freshness_ok": freshness_ok,
                 "dates_checked": len(dates),
                 "ok": report["ok"],
                 "failed_records": len(failed),

@@ -39,6 +39,8 @@ Current US support:
 - atomic full and overlapping incremental updates
 - offline schema/OHLC/corporate-action validation
 - provider-neutral drawdown statistics
+- SEC EDGAR filing history and XBRL Company Facts long tables
+- point-in-time filing, availability, and retrieval timestamps
 
 Current local terminal support:
 
@@ -102,6 +104,10 @@ $KOLMO_DATA_ROOT/
     ashare/
       baostock/
       akshare/
+    US/
+      sec/
+        companyfacts/{CIK}/
+        submissions/{CIK}/
   work/
     ashare/
     US/drawdown/latest.csv
@@ -112,6 +118,11 @@ $KOLMO_DATA_ROOT/
     ashare/
       financial_statement/
         quarterly/
+    us/
+      sec/
+        company_facts/{SYMBOL}.csv.gz
+        filings/{SYMBOL}.csv.gz
+        _meta/fetch_runs/{RUN_ID}.json
   reference/
     ashare/
       trading_calendar/
@@ -233,6 +244,209 @@ The drawdown product uses split-only adjusted closes for price drawdown and
 Tiingo adjusted closes for a separate total-return drawdown. It contains no
 buy/sell threshold; strategy interpretation belongs to downstream research.
 
+## US SEC EDGAR Fundamentals
+
+拉取 universe 中全部符合条件的美国上市公司（自动读取项目 `.env`）：
+
+```bash
+./scripts/fetch_sec_edgar.sh
+```
+
+也可以只拉指定股票：
+
+```bash
+./scripts/fetch_sec_edgar.sh --symbol AAPL --symbol MSFT
+```
+
+Kolmo uses only the SEC's official public Company Submissions and XBRL Company
+Facts endpoints for this product. No API key is required, but the SEC requires
+automated clients to identify themselves. Set a real application/contact value;
+Kolmo deliberately has no fabricated default and fails before making a request
+when the value is absent:
+
+```bash
+export SEC_USER_AGENT="Kolmo research-data your-real-address@example.com"
+```
+
+The default universe is `configs/us_value_universe.csv`. SEC ingestion processes
+only rows with `enabled=1`, `asset_type=STK`, and a non-empty `cik`. ETFs and
+rows without CIKs are recorded as skipped, not failed. CIKs are normalized to
+ten digits. Fetch the whole eligible universe or selected companies:
+
+```bash
+python3 -m kolmo.fundamental.fetch_sec_edgar
+
+python3 -m kolmo.fundamental.fetch_sec_edgar \
+  --symbol AAPL \
+  --symbol MSFT
+
+python3 -m kolmo.fundamental.fetch_sec_edgar \
+  --cik 320193 \
+  --requests-per-second 5 \
+  --workers 2
+```
+
+`--symbol` and `--cik` selectors must resolve to eligible rows in the selected
+universe, preserving the stable CIK-to-symbol identity needed by canonical
+per-symbol files. `--universe`, `--output-root`, `--user-agent`, `--timeout`,
+`--workers`, `--requests-per-second`, and `--refresh` are also supported. The
+global limiter defaults to five requests per second and rejects values above the
+SEC limit of ten. HTTP 429, 5xx, timeout, and temporary network failures receive
+bounded exponential-backoff retries.
+
+Raw responses are stored separately from canonical tables:
+
+```text
+$KOLMO_DATA_ROOT/raw/US/sec/companyfacts/{CIK}/{RETRIEVED_AT}-main-{HASH}.json.gz
+$KOLMO_DATA_ROOT/raw/US/sec/submissions/{CIK}/{RETRIEVED_AT}-{PART}-{HASH}.json.gz
+```
+
+The submissions directory includes both the current response and every history
+file referenced by it. Content hashes prevent an unchanged response from
+creating another snapshot. Canonical deterministic-gzip outputs and run evidence
+are stored under:
+
+```text
+$KOLMO_DATA_ROOT/fundamental/us/sec/company_facts/{SYMBOL}.csv.gz
+$KOLMO_DATA_ROOT/fundamental/us/sec/filings/{SYMBOL}.csv.gz
+$KOLMO_DATA_ROOT/fundamental/us/sec/_meta/fetch_runs/{RUN_ID}.json
+```
+
+The filing contract retains `accession_number`, form, filing/report dates,
+SEC acceptance time, primary document, XBRL flags, source, and Kolmo retrieval
+time. Supported forms are 10-K, 10-Q, 8-K, 20-F, 40-F, 6-K, and their `/A`
+amendments. Amendments remain separate accession records. Current and historical
+submissions are merged, deduplicated by accession, and stably sorted.
+
+Company Facts remains a long table. Each row retains `taxonomy`, `tag`, `unit`,
+context dates, exact numeric text, form, fiscal year/period, frame, accession,
+and these three distinct time meanings:
+
+- `end_date`: the reporting context, not an information-availability date;
+- `filed_date` / `accepted_at`: when the SEC received and exposed the filing;
+- `retrieved_at`: when Kolmo observed the row.
+
+`available_date` is the date portion of `accepted_at`, falling back to
+`filed_date` only when acceptance metadata is unavailable. Downstream as-of
+queries and backtests must filter on `available_date` or `accepted_at`; they must
+never treat `end_date` as the date on which the market knew a fact. A stable
+`row_id` prevents repeat ingestion from duplicating a fact while retaining every
+accession-specific amendment and restatement version.
+
+Validate canonical files without contacting the SEC:
+
+```bash
+python3 -m kolmo.fundamental.validate_sec_edgar
+python3 -m kolmo.fundamental.validate_sec_edgar --symbol AAPL
+```
+
+XBRL tags and custom taxonomies differ across issuers. The canonical SEC layer
+therefore does not guess which tag is the correct revenue or net-income measure
+or build a wide table. XBRL history is generally more complete only after
+SEC XBRL requirements took effect. This product provides auditable data, not an
+investment conclusion. Downstream strategy projects—not Kolmo—are responsible
+for financial growth/quality rules, `sector_leader`, `sector_outlook`,
+`thesis_intact`, valuation, and buy/sell signals.
+
+### Standardized US financial metrics
+
+The next offline layer converts the SEC long table into explicitly mapped,
+point-in-time versions of quarterly, annual, and TTM metrics:
+
+```text
+SEC raw JSON snapshots
+  -> fundamental/us/sec/company_facts + filings       (canonical SEC semantics)
+  -> fundamental/us/standardized/{quarterly,annual,ttm}/{SYMBOL}.csv.gz
+  -> fundamental/us/standardized/provenance/{SYMBOL}.csv.gz
+  -> fundamental/us/standardized/_meta/build_runs/{RUN_ID}.json
+```
+
+Build and validate all eligible stocks without network access:
+
+```bash
+python3 -m kolmo.fundamental.build_us_financials
+python3 -m kolmo.fundamental.validate_us_financials
+```
+
+Build one company or use the installed commands:
+
+```bash
+python3 -m kolmo.fundamental.build_us_financials --symbol AAPL
+kolmo-build-us-financials --symbol AAPL
+kolmo-validate-us-financials --symbol AAPL
+```
+
+`kolmo.fundamental.us_concepts` is the only mapping registry. Each standard
+concept has ordered exact `(taxonomy, tag, unit)` candidates; labels and
+descriptions are never fuzzy-matched, and issuer custom taxonomies are not
+mapped automatically. If candidates disagree in the same complete XBRL
+context, the higher-priority candidate is selected and
+`conflicting_candidate_tags` is emitted. Every populated field has a provenance
+row containing source tags, units, SEC fact row IDs, calculation type, periods,
+and accessions.
+
+Duration classification uses start/end dates together with fiscal metadata,
+form, and accession. Because SEC `fy`/`fp` often describe the current filing
+rather than a historical comparison fact, standardized fiscal identities are
+anchored to annual endpoints and the period's earliest disclosure; a later
+comparison cannot relabel an earlier quarter. A directly disclosed quarter wins over a cumulative fact.
+When compatible inputs are available at the current as-of date, Q2 and Q3 may
+be derived from YTD differences and Q4 from FY less Q1/Q2/Q3. Q4 never exists
+before the 10-K is public. TTM requires exactly four consecutive, non-overlapping
+quarter versions. Each TTM metric independently selects the latest non-empty
+version of each report period, so a later comparison row containing only one
+metric cannot erase other previously disclosed metrics. Balance-sheet fields
+use the latest non-empty quarter-end version and are never summed. Diluted EPS
+is not mechanically summed or differenced.
+
+Point-in-time versions are keyed by symbol, report period, period type,
+availability date, and accession. A later amendment or comparison creates a new
+version from its own availability date and never changes an earlier observation.
+Read the latest state known on a historical date with:
+
+```python
+from kolmo.fundamental.us_financials import latest_metrics_as_of
+
+row = latest_metrics_as_of(
+    symbol="AAPL",
+    as_of_date="2023-08-10",
+    period_type="ttm",
+    max_age_days=180,
+)
+```
+
+The reader returns `None` when no version was public, when the latest report
+period is older than `max_age_days`, and never returns a row whose
+`available_date` is later than the requested date. For diagnostics,
+`include_stale=True` returns stale data with `age_days` and `is_stale`; use
+`max_age_days=None` only when the caller deliberately accepts any age.
+
+The offline validator checks structural integrity, stable fiscal identities,
+four-quarter continuity, TTM provenance and arithmetic, use of the latest
+non-empty metric version, empty TTM products, stale latest periods, and missing
+applicable core metrics. Availability warnings do not turn industry-inapplicable
+fields into errors.
+
+Cash-flow expenditure concepts such as capex, dividends, and repurchases are
+normalized to positive outflows; therefore free cash flow is
+`operating_cash_flow - capital_expenditure`. Ratios use decimal form (`0.15`
+means 15%), remain empty for missing or zero denominators, and do not coerce
+missing facts to zero. `completeness_score` measures only field presence and is
+not an investment-quality score.
+
+Business-model metadata comes from the universe. Banks, insurance/financial
+groups, REITs, utilities, and ordinary non-financial companies are distinguished.
+Fields declared inapplicable are empty and listed in `applicability_flags`.
+Bank revenue can use the exact standard `RevenuesNetOfInterestExpense` tag and
+utility revenue can use exact regulated/unregulated operating-revenue tags, but
+this version intentionally does not invent bank-specific cash-flow metrics,
+insurer underwriting metrics, REIT FFO/AFFO, or treat real-estate acquisitions
+as ordinary maintenance capex. Company-specific tags, incomplete early
+XBRL history, fiscal-calendar changes, short transition periods, and unresolved
+candidate conflicts remain explicit limitations rather than guessed values.
+
+> 标准化财务指标是数据产品，不代表投资判断。下游策略项目负责定义阈值、行业领先性、行业前景和投资逻辑是否成立。
+
 ## Local Market Terminal
 
 The market terminal directly reads canonical Kolmo files and never downloads
@@ -259,6 +473,14 @@ the API performs daily, five-session, weekly, and monthly aggregation before
 returning only the selected series. Parsed source files are cached and keyed by
 file modification time and size, so a scheduled data update is visible on the
 next request without restarting the terminal.
+
+The `SEC 基本面` workspace is available for US stocks with local SEC canonical
+data. It shows coverage, filing history, raw XBRL fact filters, and an exact
+taxonomy/tag/unit history chart. API and table values remain canonical decimal
+strings. Amendments and restatements remain separate, and the UI distinguishes
+`end_date`, `accepted_at`/`available_date`, and `retrieved_at`. The chart is an
+inspection aid only; it does not infer which company-specific tag represents a
+normalized revenue, profit, or other strategy concept.
 
 ### Scheduled US Update on macOS
 
@@ -371,7 +593,7 @@ minus 10 calendar days, fetches through today, and overwrites the affected daily
 profile files. The lookback window handles late upstream corrections and cases
 where today's data is not published yet.
 
-The scheduled updater runs the same health check after every 17:00 job and
+The scheduled updater runs the same health check after every 18:30 job and
 writes:
 
 ```text
@@ -597,7 +819,7 @@ python3 -m kolmo.ashare.update_cn_profile_daily --exchange sh
 
 ## Scheduled Update
 
-On macOS, install a LaunchAgent to run the updater every day at 17:00 local
+On macOS, install a LaunchAgent to run the updater every day at 18:30 local
 time:
 
 ```bash

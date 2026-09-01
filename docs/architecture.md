@@ -4,9 +4,10 @@ Kolmo is the market-data preparation layer. It owns ingestion, normalization,
 data contracts, and local maintenance jobs. It must not contain strategy logic,
 portfolio accounting, or trading rules.
 
-US end-of-day products follow the same boundary. Kolmo may calculate neutral
-price statistics such as drawdown, but threshold-based entry/exit decisions and
-fundamental investment judgments belong to downstream research systems.
+US end-of-day and SEC EDGAR fundamental products follow the same boundary.
+Kolmo may calculate neutral price statistics such as drawdown, but
+threshold-based entry/exit decisions and fundamental investment judgments
+belong to downstream research systems.
 
 ## Boundaries
 
@@ -22,7 +23,7 @@ upstream providers
 
 Allowed:
 
-- provider adapters such as BaoStock, AKShare, and Tiingo
+- provider adapters such as BaoStock, AKShare, Tiingo, and SEC EDGAR
 - raw-cache maintenance
 - daily profile generation and repair
 - schema enrichment such as `board`
@@ -46,9 +47,11 @@ The terminal preserves a strict frontend/backend boundary:
 web/frontend (React + lightweight-charts)
   -> GET /api/v1/instruments
   -> GET /api/v1/bars
+  -> GET /api/v1/fundamentals/{summary,facts,filings,series}
 kolmo.web (read-only Python API)
   -> US/{STK,ETF}/1d/*.csv.gz
   -> raw/ashare/baostock/{sz,sh}/daily/qfq/*.csv.gz
+  -> fundamental/us/sec/{company_facts,filings}/*.csv.gz
 ```
 
 The backend owns symbol resolution, source-schema normalization, adjusted/raw
@@ -56,6 +59,12 @@ price selection, calendar aggregation, range limiting, and JSON compression.
 The frontend owns interaction and rendering only. Source files are cached by
 path, modification time, and size; an updated canonical file creates a new
 cache key and requires no service restart.
+
+The SEC workspace reads canonical gzip files only. Its API paginates facts and
+filings, keeps numeric facts as strings, and selects chart series by exact
+`(taxonomy, tag, unit)` identity. It cannot infer cross-company financial
+concepts or collapse amendment/restatement versions. Report period, public
+availability, and retrieval time remain visibly separate.
 
 ## Data Contracts
 
@@ -127,6 +136,97 @@ source identity. Fetch-run evidence is stored under
 derived into `$KOLMO_DATA_ROOT/work/US/drawdown/latest.csv`; source bars are
 never modified by the statistics job.
 
+SEC EDGAR fundamentals are a separate product with raw/canonical separation:
+
+```text
+data.sec.gov Company Submissions + referenced submission history
+data.sec.gov XBRL Company Facts
+  -> raw/US/sec/{submissions,companyfacts}/{CIK}/*.json.gz
+  -> fundamental/us/sec/filings/{SYMBOL}.csv.gz
+  -> fundamental/us/sec/company_facts/{SYMBOL}.csv.gz
+  -> fundamental/us/sec/_meta/fetch_runs/{RUN_ID}.json
+```
+
+The SEC adapter uses an explicit caller-supplied User-Agent, a process-global
+rate limiter, bounded retries, and standard-library HTTP. Raw snapshots are
+content-addressed within retrieval-stamped filenames, so identical responses
+are not stored twice. Both canonical products use deterministic gzip and atomic
+replacement. A company is normalized and validated before either canonical
+table is published; one company's failure does not stop other companies.
+
+Filing identity is the SEC accession number. Company Facts identity is a stable
+hash over issuer, taxonomy/tag/unit, context, exact value, filing metadata,
+frame, and accession. The fact table is deliberately long and traverses every
+taxonomy and unit. No cross-company tag harmonization or preferred-metric choice
+belongs in this layer.
+
+Point-in-time consumers must distinguish the report context (`end_date`), SEC
+publication evidence (`filed_date`, `accepted_at`, and derived
+`available_date`), and Kolmo observation time (`retrieved_at`). Amendments and
+restatements remain accession-specific rows. A backtest must use
+`available_date` or `accepted_at` for as-of visibility, never `end_date`.
+
+### Standardized US financial product
+
+Standardization is a downstream data-product layer and never mutates canonical
+SEC facts:
+
+```text
+fundamental/us/sec/{company_facts,filings}/{SYMBOL}.csv.gz
+  -> exact taxonomy/tag/unit mapping
+  -> PIT fact selection + period classification
+  -> annual + standalone/derived quarterly versions
+  -> four-quarter TTM + neutral arithmetic metrics
+  -> fundamental/us/standardized/{quarterly,annual,ttm}/{SYMBOL}.csv.gz
+  -> fundamental/us/standardized/provenance/{SYMBOL}.csv.gz
+```
+
+The mapping registry is centralized in `kolmo.fundamental.us_concepts`. Candidate
+priority is deterministic. A conflict produces a machine-readable flag, while
+unsupported custom taxonomies remain unmapped. The provenance table is the
+many-to-one lineage edge from each populated standardized cell to exact SEC
+fact `row_id` values and records derivation components.
+
+PIT visibility is enforced at every edge: each source fact must satisfy
+`fact.available_date <= metric.available_date`, and facts whose period end is
+after availability are excluded. Historical comparisons and amendments create
+new versions rather than replacing earlier versions. The stable row key is
+`(symbol, report_period, period_type, available_date, accession_number)`.
+SEC fiscal focus belongs to the filing and is not trusted as the identity of a
+comparison fact. Standardized quarter identities are frozen from the earliest
+disclosure and annual fiscal-year anchors, then reused by later versions.
+
+Durations are classified with bounded day ranges plus fiscal period and form.
+Ambiguous transition periods are excluded and flagged. Q2/Q3 YTD subtraction
+requires compatible company, fiscal year, concept, unit, period boundaries, and
+as-of visibility. Q4 derivation begins only at the annual filing availability.
+TTM sums exactly four consecutive quarterly flow versions. Version selection is
+performed independently for every `(report_period, metric)`: a newer sparse
+comparison row updates only metrics it actually contains. Instant facts use the
+latest non-empty version at the latest quarter end. EPS is not mechanically
+summed. The as-of reader applies a default 180-day report-period freshness guard
+and can expose `age_days`/`is_stale` for explicit diagnostics.
+
+Derived ratios use `Decimal`, decimal rather than percent representation, and
+remain empty for zero/missing denominators. Capex is a positive outflow, so FCF
+is OCF minus capex. The deterministic `built_at` field is the latest SEC input
+retrieval timestamp; wall-clock build times belong in the build manifest. This
+keeps identical inputs byte-stable under gzip `mtime=0` and atomic replacement.
+
+The validator recomputes TTM values from provenance, verifies latest-non-empty
+selection and normalized quarter continuity, and warns on empty/stale TTM or
+missing applicable core metrics. Symbol/build-wide anomaly counts remain in the
+manifest and are not propagated onto unrelated historical rows.
+
+Business-model applicability is descriptive metadata, not a judgment. Banks,
+insurance/financial groups, REITs, utilities, and non-financial companies have
+explicit inapplicable fields. Bank-specific metrics and REIT FFO/AFFO are not
+yet standardized.
+
+Standardized financial metrics are data products, not investment judgments.
+Downstream strategy projects own thresholds, sector leadership/outlook,
+investment-thesis state, signals, portfolios, and backtests.
+
 Reference products are versioned separately from daily profiles:
 
 ```text
@@ -194,6 +294,18 @@ python3 -m kolmo.us_market.fetch_daily
 python3 -m kolmo.us_market.validate_daily
 python3 -m kolmo.us_market.drawdown
 ```
+
+Maintain and validate SEC EDGAR fundamentals:
+
+```bash
+export SEC_USER_AGENT="Kolmo research-data your-real-address@example.com"
+python3 -m kolmo.fundamental.fetch_sec_edgar
+python3 -m kolmo.fundamental.validate_sec_edgar
+```
+
+Financial growth/quality criteria, sector leadership/outlook, thesis state,
+valuation thresholds, and trading signals are downstream responsibilities and
+are prohibited from the SEC canonical product.
 
 ## Quality Gates
 

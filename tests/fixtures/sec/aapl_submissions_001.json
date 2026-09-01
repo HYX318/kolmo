@@ -1,0 +1,10 @@
+{
+  "accessionNumber": ["0000320193-23-000064", "0000320193-23-000106"],
+  "filingDate": ["2023-08-04", "2023-11-03"],
+  "reportDate": ["2023-07-01", "2023-09-30"],
+  "acceptanceDateTime": ["20230804180102", ""],
+  "form": ["10-Q", "10-K"],
+  "primaryDocument": ["aapl-20230701.htm", "old-copy.htm"],
+  "isXBRL": [1, 1],
+  "isInlineXBRL": [1, 1]
+}
