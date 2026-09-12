@@ -313,10 +313,14 @@ def login_baostock_with_retry(
         except Exception as exc:
             last_error = exc
             close_baostock_socket()
+            # BaoStock documents 10001011 as an IP blacklist response. Retrying
+            # cannot recover it and only sends more traffic from the blocked IP.
+            if "10001011" in str(exc):
+                break
             if attempt < retries and retry_backoff_seconds:
                 time.sleep(retry_backoff_seconds * (2**attempt))
     assert last_error is not None
-    raise RuntimeError(f"initial BaoStock login failed after {retries + 1} attempts: {last_error}") from last_error
+    raise RuntimeError(f"initial BaoStock login failed after {attempt + 1} attempts: {last_error}") from last_error
 
 
 def run_with_reconnect(
@@ -339,10 +343,12 @@ def run_with_reconnect(
         except Exception as exc:
             last_error = exc
             close_baostock_socket()
+            if "10001011" in str(exc):
+                break
             if attempt < retries and retry_backoff_seconds:
                 time.sleep(retry_backoff_seconds * (2**attempt))
     assert last_error is not None
-    raise RuntimeError(f"{context} failed after {retries + 1} attempts: {last_error}") from last_error
+    raise RuntimeError(f"{context} failed after {attempt + 1} attempts: {last_error}") from last_error
 
 
 def normalize_date(value: str) -> str:

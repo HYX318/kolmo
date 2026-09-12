@@ -12,13 +12,15 @@ export function searchInstruments(query = '', market = 'ALL', signal) {
   return request(`/api/v1/instruments?${params}`, signal)
 }
 
-export function loadBars({ symbol, interval, price, limit }, signal) {
+export function loadBars({ symbol, interval, price, limit, start = '', end = '' }, signal) {
   const params = new URLSearchParams({
     symbol,
     interval,
     price,
     limit: String(limit),
   })
+  if (start) params.set('start', start)
+  if (end) params.set('end', end)
   return request(`/api/v1/bars?${params}`, signal)
 }
 

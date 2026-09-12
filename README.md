@@ -583,6 +583,12 @@ python3 -m kolmo.ashare.update_cn_profile_daily --target raw --refresh-raw --exc
 python3 -m kolmo.ashare.update_cn_profile_daily --target all --workers 4
 ```
 
+Adjustment controls the default date-partitioned profile destination. `qfq`
+writes to `$KOLMO_DATA_ROOT/profile/daily/{exchange}/`, while `raw` writes to
+`$KOLMO_DATA_ROOT/profile/daily_raw/{exchange}/`; the two price series never
+overwrite each other. The installed 18:30 scheduler updates and health-checks
+both products on every A-share trading day.
+
 The raw-cache merge uses independent workers per symbol. Start with four
 workers on a laptop; fetching from BaoStock remains serialized to avoid
 rate-limit and session-safety issues.
@@ -929,6 +935,152 @@ python3 -m kolmo.ashare.fetch_akshare_daily \
   --adjust qfq
 ```
 
+### BaoStock 5-minute bars
+
+Five-minute bars use a separate, resumable store from daily bars. Per-symbol
+provider caches are written under:
+
+```text
+$KOLMO_DATA_ROOT/raw/ashare/baostock/{sz,sh}/minute/5m/{raw,qfq,hfq}/{SYMBOL}.csv.gz
+```
+
+Start with a small smoke test, then remove `--limit` for a slow full-market
+backfill. Requests are split into bounded date chunks and completed symbol
+caches are reused on subsequent runs:
+
+```bash
+python3 -m kolmo.ashare.fetch_baostock_5min \
+  --exchange sh --start-date 20170101 --end-date 20260904 \
+  --adjust raw --limit 10
+
+python3 -m kolmo.ashare.fetch_baostock_5min \
+  --exchange sh --start-date 20170101 --end-date 20260904 \
+  --adjust raw --sleep 2
+```
+
+`--sleep` applies after every date-chunk request, not merely between symbols.
+Use at least two seconds for a long free-provider backfill. Error `10001011`
+means the current IP is blacklisted; stop all BaoStock jobs and contact the
+provider instead of retrying.
+
+After a fetch, build compressed daily cross-sections. Each output contains all
+five-minute bars for one exchange and trading day:
+
+```bash
+python3 -m kolmo.ashare.partition_baostock_5min \
+  --exchange sh --adjust raw \
+  --start-date 20170101 --end-date 20260904
+```
+
+The partitioner uses `$KOLMO_DATA_ROOT/work/ashare/minute_5m/` for temporary
+uncompressed buckets. Override it with `--work-dir` when that filesystem lacks
+enough free space.
+
+The date partitions are written to:
+
+```text
+$KOLMO_DATA_ROOT/profile/minute/5m/{raw,qfq,hfq}/{sz,sh}/YYYY/MM/YYYYMMDD.csv.gz
+```
+
+The 5-minute backfill is intentionally not part of the 18:30 daily scheduler;
+run it independently until the historical archive is complete.
+
+### Vendor Parquet minute archives
+
+Annual ZIP files, or a year's monthly ZIP shards, can be queried as one logical
+dataset without extracting the whole archive:
+
+```bash
+python3 -m kolmo.ashare.vendor_minute \
+  --year 2010 --frequency 5 --symbol 600519.SH
+```
+
+Run structural, session-grid, cross-frequency, and minute-to-daily checks with:
+
+```bash
+python3 -m kolmo.validation.minute_mdcheck \
+  --year 2010 --symbols 000001.SZ 600000.SH 600519.SH \
+  --skip-daily-reference --output /tmp/mdcheck-2010.json
+```
+
+After building the date-partitioned Parquet history, independently recheck all
+produced years in parallel:
+
+```bash
+caffeinate -i ./scripts/check_vendor_minute_daily.sh \
+  --start-year 2010 --end-year 2026 --workers 4 \
+  --output /tmp/minute-daily-mdcheck.json
+```
+
+This scans the produced Parquet values and metadata, validates daily symbol
+session grids, and recomputes every 5/15/30/60-minute bar from 1-minute data.
+See [`docs/minute_daily_mdcheck.md`](docs/minute_daily_mdcheck.md).
+
+Before row-level checks, inventory package/month completeness. Add `--deep`
+for release-gate ZIP CRC and SHA-256 verification:
+
+```bash
+python3 -m kolmo.validation.minute_inventory \
+  --start-year 2010 --end-year 2026 --through-month 9 \
+  --output /tmp/minute-inventory.json
+```
+
+Build a date-partitioned staging product from authoritative vendor 1-minute
+bars (higher frequencies are derived from 1-minute bars). This command does not
+publish or overwrite the formal profile:
+
+```bash
+./scripts/build_vendor_minute_profile.sh \
+  --year 2026 --start-date 2026-08-01 --end-date 2026-08-31 \
+  --workers 4
+```
+
+The default output is a unique build directory under
+`$KOLMO_DATA_ROOT/staging/minute/`. See the minute product design document for
+the validation and publication gates. The wrapper deliberately uses Kolmo's
+`.venv` interpreter; do not run this job with Apple's Xcode Python.
+
+Validate every Parquet file, manifest totals, and all derived frequencies:
+
+```bash
+./scripts/validate_vendor_minute_profile.sh \
+  --build-root "$KOLMO_DATA_ROOT/staging/minute/<build_id>"
+```
+
+Validation is streaming by daily partition and does not load a full month or
+year into memory. A successful report still does not publish the build.
+
+After the monthly pilot passes, build and validate the complete history one
+year at a time. The runner is resumable and skips years with a matching clean
+validation report:
+
+```bash
+./scripts/build_vendor_minute_history.sh \
+  --start-year 2010 --end-year 2026 --end-date 2026-09-04 \
+  --workers 4
+```
+
+Annual outputs are staged under
+`$KOLMO_DATA_ROOT/staging/minute/history-v1/year=YYYY/`. A failure stops before
+the next year and never publishes partial history.
+The wrapper loads `KOLMO_DATA_ROOT` from the project `.env`; normally no
+`--output-root` argument is needed.
+Both build stages use process workers: symbols are decoded into temporary
+daily fragments in parallel, then independent date/exchange partitions are
+merged and derived in parallel. Four workers is the laptop-safe default; raise
+it only after observing memory and storage throughput on a complete year.
+The canonical session is exchange-aware: Beijing Stock Exchange rows from
+15:01 through 15:30 are retained as a separate post-close segment and are
+never merged into the regular 15:00 bar.
+
+See [`docs/minute_mdcheck.md`](docs/minute_mdcheck.md) for the data contract,
+test levels, tolerances, and acceptance gates. Keep unaccepted deliveries under
+`raw/vendor_candidate`; the checker does not rewrite source archives.
+
+The proposed canonical schema, daily Parquet layout, production state machine,
+release gates, and pilot plan are documented in
+[`docs/minute_data_product_design.md`](docs/minute_data_product_design.md).
+
 ## Company Profile Input
 
 If you already have company-style daily txt/csv files, normalize them with:
@@ -957,6 +1109,13 @@ For the interactive local terminal (K-line plus daily market cross-section):
 ```bash
 python3 -m kolmo.viz.market_terminal
 ```
+
+For A-shares, the chart automatically exposes `1m`, `5m`, `15m`, `30m`, and
+`60m` when complete vendor ZIP archives are present under
+`$KOLMO_DATA_ROOT/raw/vendor_candidate/minute_201001_202609/分钟线数据/`.
+The backend reads only the requested symbol/year Parquet member, caches decoded
+bars in memory, and skips partial `.qkdownloading` files. Minute prices are raw;
+the UI displays volume, amount, zero-volume warnings, and MA5/10/20 overlays.
 
 Then open `http://127.0.0.1:8765`. It loads exactly one symbol history or one
 daily cross-section on demand from `$KOLMO_DATA_ROOT`; it never copies raw data
