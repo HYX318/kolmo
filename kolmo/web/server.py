@@ -127,7 +127,7 @@ def handler_factory(store: MarketStore, fundamentals: FundamentalStore, frontend
                 if parsed.path == "/api/v1/bars":
                     start = _iso_date(_one(query, "start")) if _one(query, "start") else ""
                     end = _iso_date(_one(query, "end")) if _one(query, "end") else ""
-                    limit = _integer(_one(query, "limit"), 0, 0, 20000)
+                    limit = _integer(_one(query, "limit"), 0, 0, 100000)
                     payload = store.bars(
                         _one(query, "symbol"),
                         _one(query, "interval", "1d"),

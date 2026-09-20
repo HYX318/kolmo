@@ -57,16 +57,31 @@ trap 'rm -f "$lock_dir/pid" "$lock_dir/started_at" "${status_tmp:-}"; rmdir "$lo
         "$(date '+%Y-%m-%dT%H:%M:%S%z')" >"$status_tmp"
     mv -f "$status_tmp" "$status_file"
     status_tmp=""
-    update_status=0
+    qfq_update_status=0
     "$python_bin" -m kolmo.scheduler.update_cn_profile_if_trading_day \
         --calendar baostock \
         --skip-exit-code 20 \
         --calendar-timeout-seconds 15 \
         --update-timeout-seconds 4000 \
-        -- --target all --workers 4 --exchange-timeout-seconds 1800 || update_status=$?
-    if [[ "$update_status" -eq 20 ]]; then
+        -- --target all --adjust qfq --workers 4 --exchange-timeout-seconds 1800 || qfq_update_status=$?
+    raw_update_status=0
+    if [[ "$qfq_update_status" -eq 20 ]]; then
         trading_day=false
-        update_status=0
+        qfq_update_status=0
+    elif [[ "$qfq_update_status" -eq 0 ]]; then
+        "$python_bin" -m kolmo.scheduler.process_timeout \
+            --timeout-seconds 4000 --label raw-profile-update -- \
+            "$python_bin" -m kolmo.ashare.update_cn_profile_daily \
+            --end-date "$trade_date" --target all --adjust raw --workers 4 \
+            --exchange-timeout-seconds 1800 || raw_update_status=$?
+    else
+        # A failed calendar/qfq stage can indicate a provider outage or
+        # blacklist. Do not multiply requests by starting the raw stage.
+        raw_update_status=99
+    fi
+    update_status=0
+    if [[ "$qfq_update_status" -ne 0 || "$raw_update_status" -ne 0 ]]; then
+        update_status=1
     fi
     health_status=0
     health_command=(
@@ -80,12 +95,25 @@ trap 'rm -f "$lock_dir/pid" "$lock_dir/started_at" "${status_tmp:-}"; rmdir "$lo
     fi
     "$python_bin" -m kolmo.scheduler.process_timeout \
         --timeout-seconds 600 --label profile-health -- "${health_command[@]}" || health_status=$?
+    raw_health_status=0
+    raw_health_command=(
+        "$python_bin" -m kolmo.ashare.profile_health_check
+        --profile-root "$KOLMO_DATA_ROOT/profile/daily_raw"
+        --days 20
+        --json-output "$KOLMO_DATA_ROOT/logs/kolmo/profile_raw_health_latest.json"
+        --csv-output "$KOLMO_DATA_ROOT/logs/kolmo/profile_raw_health_latest.csv"
+    )
+    if [[ "$trading_day" == true ]]; then
+        raw_health_command+=(--expected-latest-date "$trade_date")
+    fi
+    "$python_bin" -m kolmo.scheduler.process_timeout \
+        --timeout-seconds 600 --label raw-profile-health -- "${raw_health_command[@]}" || raw_health_status=$?
     reference_status=0
     "$python_bin" -m kolmo.scheduler.process_timeout \
         --timeout-seconds 300 --label security-master -- \
         "$python_bin" -m kolmo.reference.security_master --as-of-date "$trade_date" || reference_status=$?
     snapshot_status=0
-    if [[ "$trading_day" == true && "$update_status" -eq 0 && "$health_status" -eq 0 && "$reference_status" -eq 0 ]]; then
+    if [[ "$trading_day" == true && "$update_status" -eq 0 && "$health_status" -eq 0 && "$raw_health_status" -eq 0 && "$reference_status" -eq 0 ]]; then
         "$python_bin" -m kolmo.scheduler.process_timeout \
             --timeout-seconds 300 --label profile-snapshot -- \
             "$python_bin" -m kolmo.catalog.profile_snapshot publish --latest-days 80 || snapshot_status=$?
@@ -94,15 +122,15 @@ trap 'rm -f "$lock_dir/pid" "$lock_dir/started_at" "${status_tmp:-}"; rmdir "$lo
     fi
     finished_at="$(date '+%Y-%m-%dT%H:%M:%S%z')"
     result_status=0
-    if [[ "$update_status" -ne 0 || "$health_status" -ne 0 || "$reference_status" -ne 0 || "$snapshot_status" -ne 0 ]]; then
+    if [[ "$update_status" -ne 0 || "$health_status" -ne 0 || "$raw_health_status" -ne 0 || "$reference_status" -ne 0 || "$snapshot_status" -ne 0 ]]; then
         result_status=1
     fi
-    printf '{"event":"scheduled_update_finished","time":"%s","trading_day":%s,"update_status":%s,"health_status":%s,"reference_status":%s,"snapshot_status":%s}\n' \
-        "$finished_at" "$trading_day" "$update_status" "$health_status" "$reference_status" "$snapshot_status"
+    printf '{"event":"scheduled_update_finished","time":"%s","trading_day":%s,"update_status":%s,"qfq_update_status":%s,"raw_update_status":%s,"health_status":%s,"raw_health_status":%s,"reference_status":%s,"snapshot_status":%s}\n' \
+        "$finished_at" "$trading_day" "$update_status" "$qfq_update_status" "$raw_update_status" "$health_status" "$raw_health_status" "$reference_status" "$snapshot_status"
     status_tmp="$status_file.tmp.$$"
-    printf '{"time":"%s","trading_day":%s,"ok":%s,"update_status":%s,"health_status":%s,"reference_status":%s,"snapshot_status":%s}\n' \
+    printf '{"time":"%s","trading_day":%s,"ok":%s,"update_status":%s,"qfq_update_status":%s,"raw_update_status":%s,"health_status":%s,"raw_health_status":%s,"reference_status":%s,"snapshot_status":%s}\n' \
         "$finished_at" "$trading_day" "$([[ "$result_status" -eq 0 ]] && printf true || printf false)" \
-        "$update_status" "$health_status" "$reference_status" "$snapshot_status" >"$status_tmp"
+        "$update_status" "$qfq_update_status" "$raw_update_status" "$health_status" "$raw_health_status" "$reference_status" "$snapshot_status" >"$status_tmp"
     mv -f "$status_tmp" "$status_file"
     status_tmp=""
     if [[ "$result_status" -eq 0 ]]; then

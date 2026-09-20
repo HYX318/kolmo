@@ -82,9 +82,15 @@ h1 span { margin-left: 10px; color: #7d8ba0; font: 500 15px Manrope, sans-serif;
 .chart-heading { display: flex; justify-content: space-between; align-items: center; min-height: 52px; padding: 0 15px; border-bottom: 1px solid var(--line); }
 .chart-heading b { font-size: 12px; }
 .chart-heading div span { margin-left: 11px; color: #617188; font-size: 10px; }
+.chart-heading .quality-flag { margin-left: 10px; padding: 3px 6px; color: #d8aa55; background: #211c11; border: 1px solid #4a3c1e; font: normal 9px IBM Plex Mono, monospace; }
 .status { color: #596a80; font: 10px IBM Plex Mono, monospace; }
 .chart-stage { position: relative; height: min(66vh, 680px); min-height: 430px; }
+.chart-wrap { position: relative; width: 100%; height: 100%; }
 .chart-canvas { width: 100%; height: 100%; }
+.ma-legend { position: absolute; z-index: 1; top: 9px; left: 13px; display: flex; gap: 12px; pointer-events: none; font: 9px IBM Plex Mono, monospace; }
+.ma-legend span:nth-child(1) { color: #e8c15d; }
+.ma-legend span:nth-child(2) { color: #6da5df; }
+.ma-legend span:nth-child(3) { color: #b77bd1; }
 .chart-message { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; background: rgba(13, 20, 32, .82); color: var(--muted); font-size: 12px; z-index: 2; }
 .chart-message.error b { color: var(--red); }
 .chart-message.error span { max-width: 480px; text-align: center; }

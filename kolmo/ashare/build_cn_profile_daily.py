@@ -127,7 +127,8 @@ def run(command: list[str], cwd: Path) -> int:
 def build_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
     start_date = compact_date(args.start_date)
     end_date = compact_date(args.end_date)
-    output_dir = args.output_dir or str(data_path("profile", "daily", exchange))
+    profile_product = "daily_raw" if args.adjust == "raw" else "daily"
+    output_dir = args.output_dir or str(data_path("profile", profile_product, exchange))
     raw_dir = args.raw_dir or str(data_path("raw", "ashare", "baostock", exchange, "daily"))
     combined_output = Path(
         args.combined_output

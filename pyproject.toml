@@ -15,6 +15,7 @@ dependencies = [
     "akshare>=1.18.0",
     "baostock>=0.8.9",
     "pandas>=2.0.0",
+    "pyarrow>=16.0.0",
 ]
 
 [project.scripts]
@@ -22,6 +23,15 @@ kolmo = "kolmo.cli:main"
 kolmo-build-cn-profile = "kolmo.ashare.build_cn_profile_daily:main"
 kolmo-update-cn-profile = "kolmo.ashare.update_cn_profile_daily:main"
 kolmo-fetch-baostock-daily = "kolmo.ashare.fetch_baostock_daily:main"
+kolmo-fetch-baostock-5min = "kolmo.ashare.fetch_baostock_5min:main"
+kolmo-partition-baostock-5min = "kolmo.ashare.partition_baostock_5min:main"
+kolmo-read-vendor-minute = "kolmo.ashare.vendor_minute:main"
+kolmo-mdcheck-minute = "kolmo.validation.minute_mdcheck:main"
+kolmo-mdcheck-minute-daily = "kolmo.validation.daily_mdcheck:main"
+kolmo-inventory-minute = "kolmo.validation.minute_inventory:main"
+kolmo-build-vendor-minute-profile = "kolmo.ashare.build_vendor_minute_profile:main"
+kolmo-build-vendor-minute-history = "kolmo.ashare.build_vendor_minute_history:main"
+kolmo-validate-vendor-minute-profile = "kolmo.validation.minute_profile:main"
 kolmo-partition-daily = "kolmo.ashare.partition_daily_bars_by_date:main"
 kolmo-normalize-daily-profile = "kolmo.ashare.normalize_daily_profile:main"
 kolmo-compress-raw-cache = "kolmo.ashare.compress_raw_cache:main"

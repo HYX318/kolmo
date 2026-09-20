@@ -41,6 +41,28 @@ def read_rows(path: Path) -> list[dict[str, str]]:
 
 
 class MergeRawCacheTest(unittest.TestCase):
+    def test_raw_adjustment_defaults_to_daily_raw_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = update_cn_profile_daily.argparse.Namespace(
+                target="profile", output_dir="", end_date="20260718",
+                lookback_days=10, adjust="raw", sleep=0.0, workers=4,
+                refresh_raw=False, raw_window="", limit=0, no_include_delisted=False,
+                full_start_date="20170101", partition_on_fetch_failure=False,
+                exchange_timeout_seconds=30.0,
+            )
+            captured: dict[str, list[str]] = {}
+            with patch.object(update_cn_profile_daily, "data_path", side_effect=lambda *parts: root.joinpath(*parts)), patch.object(
+                update_cn_profile_daily,
+                "run",
+                side_effect=lambda command, cwd, timeout: captured.setdefault("command", command) and 0,
+            ):
+                self.assertEqual(update_cn_profile_daily.update_exchange(args, root, "sh"), 0)
+
+            command = captured["command"]
+            output_index = command.index("--output-dir") + 1
+            self.assertEqual(Path(command[output_index]), root / "profile" / "daily_raw" / "sh")
+
     def test_incremental_rows_replace_matching_dates_and_keep_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -133,6 +155,25 @@ class MergeRawCacheTest(unittest.TestCase):
 
 
 class RowsFromResultTest(unittest.TestCase):
+    def test_blacklist_login_error_is_not_retried(self) -> None:
+        class LoginResult:
+            error_code = "10001011"
+            error_msg = "blacklisted"
+
+        class BlacklistedBaoStock:
+            attempts = 0
+
+            @classmethod
+            def login(cls):
+                cls.attempts += 1
+                return LoginResult()
+
+        with self.assertRaisesRegex(RuntimeError, "10001011"):
+            login_baostock_with_retry(
+                BlacklistedBaoStock(), 0.1, retries=5, retry_backoff_seconds=0
+            )
+        self.assertEqual(BlacklistedBaoStock.attempts, 1)
+
     def test_initial_login_uses_finite_retry(self) -> None:
         class LoginResult:
             error_code = "0"

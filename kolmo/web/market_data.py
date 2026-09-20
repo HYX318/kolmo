@@ -12,10 +12,14 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from kolmo.ashare.vendor_minute import VendorMinuteArchive
 
-CN_SYMBOL_RE = re.compile(r"^\d{6}\.(SZ|SH)$")
+
+CN_SYMBOL_RE = re.compile(r"^\d{6}\.(SZ|SH|BJ)$")
 US_SYMBOL_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,19}$")
-INTERVALS = {"1d", "5d", "1w", "1mo"}
+DAILY_INTERVALS = {"1d", "5d", "1w", "1mo"}
+MINUTE_INTERVALS = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "60m": 60}
+INTERVALS = DAILY_INTERVALS | set(MINUTE_INTERVALS)
 PRICE_MODES = {"adjusted", "raw"}
 
 
@@ -47,6 +51,18 @@ class SourceBar:
 @dataclass(frozen=True)
 class Bar:
     date: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+    amount: float | None
+
+
+@dataclass(frozen=True)
+class MinuteBar:
+    date: str
+    time: int
     open: float
     high: float
     low: float
@@ -188,10 +204,51 @@ def filter_bars(bars: Sequence[Bar], start: str, end: str, limit: int) -> list[B
     return selected[-limit:] if limit else selected
 
 
+ARCHIVE_RE = re.compile(r"A股(?P<frequency>1|5|15|30|60)分钟历史行情_(?P<year>\d{4})\.zip$")
+
+
+def minute_archives(root: Path, frequency: int) -> list[tuple[int, Path]]:
+    output: list[tuple[int, Path]] = []
+    if not root.is_dir():
+        return output
+    for path in root.glob("*/*.zip"):
+        match = ARCHIVE_RE.fullmatch(path.name)
+        if match and int(match.group("frequency")) == frequency:
+            output.append((int(match.group("year")), path))
+    return sorted(output)
+
+
+@lru_cache(maxsize=8)
+def _read_minute_bars_cached(
+    path_text: str, modified_ns: int, size: int, frequency: int, symbol: str,
+) -> tuple[MinuteBar, ...]:
+    del modified_ns, size
+    with VendorMinuteArchive(Path(path_text), frequency) as archive:
+        frame = archive.read_symbol(symbol)
+    output: list[MinuteBar] = []
+    for row in frame.itertuples(index=False):
+        stamp = row.trade_time
+        output.append(MinuteBar(
+            date=stamp.strftime("%Y-%m-%d %H:%M"),
+            time=int(stamp.timestamp()),
+            open=float(row.open), high=float(row.high), low=float(row.low), close=float(row.close),
+            volume=float(row.vol), amount=float(row.amount),
+        ))
+    return tuple(output)
+
+
+def read_minute_bars(path: Path, frequency: int, symbol: str) -> tuple[MinuteBar, ...]:
+    stat = path.stat()
+    return _read_minute_bars_cached(
+        str(path), stat.st_mtime_ns, stat.st_size, frequency, symbol,
+    )
+
+
 class MarketStore:
     def __init__(self, root: Path, config_root: Path):
         self.root = root
         self.config_root = config_root
+        self.minute_root = root / "raw" / "vendor_candidate" / "minute_201001_202609" / "分钟线数据"
         self._instruments: dict[str, Instrument] | None = None
 
     def _us_metadata(self) -> dict[str, Instrument]:
@@ -238,6 +295,15 @@ class MarketStore:
             for path in base.glob("*.csv.gz"):
                 symbol = path.name.removesuffix(".csv.gz").upper()
                 output[symbol] = Instrument(symbol, names.get(symbol, symbol), "CN", "STK")
+        # Minute archives also contain delisted names and, in recent years, BJ symbols
+        # that may not exist in the current BaoStock daily universe.
+        for _, path in minute_archives(self.minute_root, 5):
+            try:
+                with VendorMinuteArchive(path, 5) as archive:
+                    for symbol in archive.symbols:
+                        output.setdefault(symbol, Instrument(symbol, names.get(symbol, symbol), "CN", "STK"))
+            except (OSError, ValueError):
+                continue
         self._instruments = output
         return output
 
@@ -276,7 +342,7 @@ class MarketStore:
     def _path(self, instrument: Instrument) -> Path:
         if instrument.market == "US":
             return self.root / "US" / instrument.asset_type / "1d" / f"{instrument.symbol}.csv.gz"
-        exchange = "sh" if instrument.symbol.endswith(".SH") else "sz"
+        exchange = instrument.symbol[-2:].lower()
         return (
             self.root / "raw" / "ashare" / "baostock" / exchange
             / "daily" / "qfq" / f"{instrument.symbol}.csv.gz"
@@ -302,6 +368,10 @@ class MarketStore:
         instrument = self.instruments().get(normalized)
         if instrument is None:
             raise FileNotFoundError(f"symbol is not available locally: {normalized}")
+        if interval in MINUTE_INTERVALS:
+            if instrument.market != "CN":
+                raise ValueError("minute archives are currently available for A-shares only")
+            return self.minute_bars(instrument, interval, start, end, limit)
         path = self._path(instrument)
         if not path.is_file():
             raise FileNotFoundError(f"daily cache not found: {path}")
@@ -340,5 +410,76 @@ class MarketStore:
                 "first_date": visible[0].date,
                 "last_date": visible[-1].date,
                 "load_ms": round((time.perf_counter() - started) * 1000, 3),
+                "source": "baostock" if instrument.market == "CN" else "tiingo",
+                "granularity": "daily",
+            },
+        }
+
+    def minute_bars(
+        self,
+        instrument: Instrument,
+        interval: str,
+        start: str = "",
+        end: str = "",
+        limit: int = 0,
+    ) -> dict[str, object]:
+        started = time.perf_counter()
+        frequency = MINUTE_INTERVALS[interval]
+        archives = minute_archives(self.minute_root, frequency)
+        if start:
+            archives = [(year, path) for year, path in archives if year >= int(start[:4])]
+        if end:
+            archives = [(year, path) for year, path in archives if year <= int(end[:4])]
+        if not archives:
+            raise FileNotFoundError(f"no complete {interval} vendor archives are available")
+
+        selected: list[MinuteBar] = []
+        years_loaded: list[int] = []
+        for year, path in reversed(archives):
+            try:
+                annual = read_minute_bars(path, frequency, instrument.symbol)
+            except KeyError:
+                continue
+            selected[0:0] = annual
+            years_loaded.append(year)
+            if not start and limit and len(selected) >= limit:
+                break
+        if start:
+            selected = [bar for bar in selected if bar.date[:10] >= start]
+        if end:
+            selected = [bar for bar in selected if bar.date[:10] <= end]
+        if limit:
+            selected = selected[-limit:]
+        if not selected:
+            raise FileNotFoundError(f"no {interval} bars for requested range: {instrument.symbol}")
+
+        latest = selected[-1]
+        previous = selected[-2] if len(selected) > 1 else latest
+        peak = max(bar.high for bar in selected)
+        zero_volume_rows = sum(bar.volume == 0 for bar in selected)
+        quote = {
+            "date": latest.date, "time": latest.time,
+            "open": latest.open, "high": latest.high, "low": latest.low,
+            "close": latest.close, "volume": latest.volume, "amount": latest.amount,
+            "change": latest.close - previous.close,
+            "change_pct": latest.close / previous.close - 1.0 if previous.close else 0.0,
+            "high_52w": peak,
+            "drawdown_52w": latest.close / peak - 1.0 if peak else 0.0,
+        }
+        return {
+            "instrument": asdict(instrument),
+            "interval": interval,
+            "price_mode": "raw",
+            "bars": [asdict(bar) for bar in selected],
+            "quote": quote,
+            "meta": {
+                "source_rows": len(selected), "rows": len(selected),
+                "first_date": selected[0].date, "last_date": selected[-1].date,
+                "load_ms": round((time.perf_counter() - started) * 1000, 3),
+                "source": "vendor_parquet", "granularity": "minute",
+                "frequency_minutes": frequency,
+                "available_years": [year for year, _ in archives],
+                "years_loaded": sorted(years_loaded),
+                "zero_volume_rows": zero_volume_rows,
             },
         }

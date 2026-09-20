@@ -1,8 +1,12 @@
 import csv
 import gzip
+import io
 import tempfile
 import unittest
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
+
+import pandas as pd
 
 from kolmo.web.market_data import Bar, MarketStore, aggregate_bars
 from kolmo.web.fundamentals import FundamentalStore
@@ -78,6 +82,35 @@ class MarketStoreTest(unittest.TestCase):
             payload = store.bars("AAPL", "1d", "adjusted")
             self.assertEqual(payload["bars"][0]["open"], 50.0)
             self.assertEqual(payload["quote"]["change_pct"], 51.5 / 50.5 - 1.0)
+
+    def test_cn_minute_bars_are_loaded_from_annual_zip_and_limited(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            data_root = base / "data"
+            config_root = base / "project"
+            frame = pd.DataFrame({
+                "ts_code": ["600519.SH"] * 3, "freq": ["5min"] * 3,
+                "trade_time": pd.to_datetime([
+                    "2010-01-04 09:30", "2010-01-04 09:35", "2010-01-04 09:40",
+                ]).tz_localize("Asia/Shanghai"),
+                "open": [10.0, 10.1, 10.2], "close": [10.1, 10.2, 10.3],
+                "high": [10.2, 10.3, 10.4], "low": [9.9, 10.0, 10.1],
+                "vol": [100, 0, 300], "amount": [1000.0, 0.0, 3090.0],
+            })
+            payload = io.BytesIO()
+            frame.to_parquet(payload, index=False)
+            archive = data_root / "raw" / "vendor_candidate" / "minute_201001_202609" / "分钟线数据" / "2010" / "A股5分钟历史行情_2010.zip"
+            archive.parent.mkdir(parents=True)
+            with ZipFile(archive, "w", ZIP_DEFLATED) as output:
+                output.writestr("2010/5分钟/600519.SH.parquet", payload.getvalue())
+
+            store = MarketStore(data_root, config_root)
+            self.assertEqual(store.search("600519", "CN")[0]["symbol"], "600519.SH")
+            result = store.bars("600519.SH", "5m", "raw", limit=2)
+            self.assertEqual([bar["date"][-5:] for bar in result["bars"]], ["09:35", "09:40"])
+            self.assertEqual(result["bars"][0]["time"], 1262568900)
+            self.assertEqual(result["meta"]["source"], "vendor_parquet")
+            self.assertEqual(result["meta"]["zero_volume_rows"], 1)
 
 
 class FundamentalStoreTest(unittest.TestCase):

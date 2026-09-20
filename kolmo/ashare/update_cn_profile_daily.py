@@ -225,8 +225,9 @@ def existing_incremental_raw_dir(exchange: str, adjust: str, raw_window: str) ->
 
 
 def update_exchange(args: argparse.Namespace, root: Path, exchange: str) -> int:
+    profile_product = "daily_raw" if args.adjust == "raw" else "daily"
     output_dir = Path(
-        args.output_dir or data_path("profile", "daily", exchange)
+        args.output_dir or data_path("profile", profile_product, exchange)
     )
     end_date = compact_date(args.end_date)
     latest = latest_profile_date(output_dir)
