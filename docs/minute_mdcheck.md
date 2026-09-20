@@ -1,141 +1,136 @@
-# A 股分钟行情 MDCheck 方案
+# 原始供应商分钟数据：读取、清单与 MDCheck
 
-正式产品 schema、按日分区和发布流程见
-[`minute_data_product_design.md`](minute_data_product_design.md)。
+更新于 2026-09-20。本文只描述供应商 ZIP 入口；已生产 Parquet 的检查见 [生产 MDCheck](minute_daily_mdcheck.md)，字段、生产流程及 C++ 读取见 [分钟数据手册](minute_data_product_design.md)。
 
-这里称为 **MDCheck（market-data check）**。OB test 通常指 order-book / 盘口逐档数据检查；当前数据只有 K 线，不属于 OB 数据。
+## 1. 三种入口的边界
 
-## 数据契约
+| 入口 | 输入 | 目的 |
+|---|---|---|
+| `kolmo.validation.minute_inventory` | 年/月包及默认纳入的退市包 | 交付物清单；deep 模式增加 CRC 和 SHA-256 |
+| `kolmo.validation.minute_mdcheck` | 供应商各周期 ZIP，以及可选本地未复权日线 | 原始分钟结构、供应商跨周期及日线对账 |
+| `scripts/check_vendor_minute_daily.sh` | 已生产 history-v1 的 Parquet | 内部契约与派生一致性；**没有独立日线对账** |
 
-供应商分钟文件按“年份 × 频率”打包为 ZIP，ZIP 内每只股票一个 Parquet。字段为：
+不要用原始 ZIP 的检查通过替代生产数据验收，也不要把生产聚合自洽解释为原始行情准确。
 
-`ts_code, freq, trade_time, open, close, high, low, vol, amount`
+## 2. 路径与原始字段
 
-- `trade_time` 是 `Asia/Shanghai` 时区的 bar 结束时间。
-- `09:30` 集合竞价单独成 bar；连续竞价上午从 `09:31` 开始，下午从 `13:01` 开始。
-- 北交所另保留 `15:01`–`15:30` 盘后交易时段；它独立分桶，不并入 `15:00` 竞价 bar。
-- `vol` 单位为股，`amount` 单位为元。
-- OHLC 是未复权价。复权因子应在查询/研究层按指定基准日应用，不能覆盖原始行情。
-- 零成交量 K 线可能是供应商填充行，不代表股票当天可交易。
-
-## 分层测试
-
-### L0：交付物完整性（阻断）
-
-- ZIP CRC 校验通过；记录文件大小、SHA-256、交付批次。
-- 拒绝 `.qkdownloading` 等未完成文件。
-- 年份、频率齐全；文件命名可解析。
-- ZIP 内股票集合差异必须解释，不能静默忽略。
-
-### L1：单表契约（阻断）
-
-- 必需字段、类型、时区正确；`(ts_code, trade_time)` 唯一且升序。
-- `low <= open/close <= high`，价格为正，成交量和成交额非负。
-- 文件内股票代码和频率常量与路径一致。
-- 缺失值、重复行、非法交易时刻均为错误。
-
-### L2：日历与交易时段（阻断/告警）
-
-- 沪深完整交易日正常应有：1m=241、5m=49、15m=17、30m=9、60m=5 根。
-- 北交所若包含盘后时段，canonical 完整日为：1m=271、5m=55、15m=19、30m=10、
-  60m=6 根；60m 的最后一根是标记为 `15:30` 的 30 分钟部分 bar。
-- 交易日期与交易日历对齐；跨频率交易日集合一致。
-- 全市场同一天缺失属于阻断问题；个股缺失需结合上市、退市、停牌状态判断。
-- `全天 volume=0` 记为不可交易日。全年零量且价格恒定的填充网格必须被识别，不能进入可交易样本。
-
-### L3：聚合与独立日线对账（核心）
-
-先按中国市场午休边界显式分桶，不使用跨午休的默认 resample：
-
-- `daily.open = 第一根 open`
-- `daily.high = max(minute.high)`
-- `daily.low = min(minute.low)`
-- `daily.close = 最后一根 close`
-- `daily.volume = sum(minute.volume)`
-- `daily.amount = sum(minute.amount)`
-
-执行两类对账：
-
-1. 1m 聚合到 5/15/30/60m，与供应商对应频率逐 bar 和逐日比较。
-2. 1m 聚合日线与独立未复权日线（当前为 `profile/daily_raw`）比较。
-
-价格容差默认半个最小价位 `0.005`；成交量允许 10 股舍入差；成交额允许 200 元或 `1e-8` 相对误差。阈值用于区分舍入和实质差异，报告仍保留最大绝对差。
-
-### L4：复权因子（接入前阻断）
-
-- 因子必须为正、同日唯一、日期升序，并覆盖有行情的交易日。
-- 因子变化日与除权除息事件对齐；检查异常倍增、倒置及未来函数。
-- 用因子生成前/后复权序列后，抽样与另一独立来源比较；成交量、成交额不随价格复权误改。
-
-### L5：统计异常与回测安全（告警）
-
-- 零量但 OHLC 变化、正成交量但成交额为零、成交均价落在 `[low, high]` 外。
-- 长时间恒价、极端收益、异常跳价、价格越过涨跌停限制。
-- IPO/退市/ST/停牌日覆盖，幸存者偏差和幽灵可交易日检查。
-- 按年份、交易所、板块和流动性分层抽样；每次交付保存 JSON/CSV 证据。
-
-## 验收建议
-
-- L0/L1 错误必须为零。
-- 全市场共同缺日必须修复或取得供应商书面说明。
-- 日成交量/成交额与独立日线的实质差异率应接近零。
-- OHLC 跨频率差异不能只看平均值；需检查差异率、最大值和具体日期。
-- 通过前只进入隔离的 `vendor_candidate` 区，不覆盖正式 profile。
-
-## 生产布局
-
-原始交付层保持供应商原样，月包、年包和下载中的临时文件均不改名。这一层用于追溯，
-不能作为正式查询接口。清单和 MDCheck 把一个年包或同年的多个月包抽象成相同的
-`year × frequency` 逻辑数据集，因此生产代码不应依赖供应商目录深度或中文/`min` 命名。
-
-正式产品统一为“年份 × 频率”的不可变年度快照：
+默认原始目录：
 
 ```text
-$KOLMO_DATA_ROOT/profile/minute/vendor/raw/annual/YYYY/
-  A股{1,5,15,30,60}分钟历史行情_YYYY.zip
-  manifest.json
+$KOLMO_DATA_ROOT/raw/vendor_candidate/minute_201001_202609/分钟线数据/
 ```
 
-每个 ZIP 内每只股票一个 Parquet，主键是 `(ts_code, trade_time)`。年度快照必须合并
-正常上市与退市股票；同一股票在多个输入分片出现时先按时间拼接，再检查重复主键，不能
-静默覆盖。2026 月包只有在目标月份全部到齐、L0/L1 通过后才合并成年包。历史年包也先
-验收后原样晋级或重建，不能仅因文件名规范就直接发布。
+2010–2025 采用年包，2026 采用月包；同年/周期的多个包由 `VendorMinuteDataset` 统一读取。同一年同时有年包和月包时优先年包。每只股票的原始 Parquet 位于 ZIP 内，退市股票另有嵌套 ZIP 读取实现。
 
-建议门禁顺序：
+| 原始字段 | 含义 | 生产字段 |
+|---|---|---|
+| `ts_code` | 股票代码及市场后缀 | `symbol` |
+| `freq` | `1min`、`5min` 等周期标记 | 周期移入路径/metadata |
+| `trade_time` | 上海时区时间标签，当前契约按 bar 结束时间处理 | `trade_time` |
+| `open/high/low/close` | 当前 bar 的未复权 OHLC，不是每日重复的开盘价或累计高低价 | 同名 |
+| `vol` | 当前 bar 成交量，单位股 | `volume` |
+| `amount` | 当前 bar 成交额，单位元 | `amount` |
 
-1. 快速 inventory：包数、月份、成员集合、未完成文件。
-2. 深度 inventory：对所有 ZIP 做 CRC 和 SHA-256，保存交付 manifest。
-3. MDCheck 抽样：跨板块、交易所、流动性和年份。
-4. MDCheck 全量：L0/L1 error 必须为零，跨频率和日线差异留证。
-5. 合并退市股票，重新跑唯一性、覆盖率和日历检查。
-6. 原子写入年度快照和 manifest；只有验收报告通过才更新正式产品指针。
+09:30 的供应商业务语义尚未核实，不能直接等同为单次集合竞价撮合；详见主手册的已知疑点。
 
-## 命令
+## 3. 原始数据读取
 
-先做快速交付清单（只读 ZIP 中央目录，不扫描 63GB payload）：
+源码：[vendor_minute.py](../kolmo/ashare/vendor_minute.py)。在项目根目录运行：
 
 ```bash
-kolmo-inventory-minute --start-year 2010 --end-year 2026 \
-  --through-month 9 --output /tmp/minute-inventory.json
+export KOLMO_DATA_ROOT="$HOME/dat/all"
+
+.venv/bin/python -m kolmo.ashare.vendor_minute \
+  --year 2026 --frequency 1 --symbol 600519.SH \
+  --start-date 2026-09-01 --end-date 2026-09-04 \
+  --output /tmp/vendor-600519-1m.parquet
 ```
 
-正式验收时增加 `--deep`，逐字节执行 ZIP CRC 并记录每个包的 SHA-256。
-快速清单通过后再运行下方逐行 MDCheck。读取层将一个年包和一组月包都视为同一个
-`年份 × 频率` 逻辑数据集；原始交付物不改名、不重压。
+支持 `--root` 覆盖原始目录；`--output` 可为 `.csv`、`.csv.gz` 或 `.parquet`。
+该命令读取原始 ZIP；查看生产后的控制台表格请使用 [C++ minute_read](../tools/minute_read/README.md)。
 
-读取一个股票而不解压全年 ZIP：
+## 4. 交付清单
+
+源码：[minute_inventory.py](../kolmo/validation/minute_inventory.py)。
 
 ```bash
-kolmo-read-vendor-minute --year 2010 --frequency 5 --symbol 600519.SH
+.venv/bin/python -m kolmo.validation.minute_inventory \
+  --start-year 2010 --end-year 2026 --through-month 9 \
+  --output /tmp/minute-inventory.json
 ```
 
-抽样检查：
+快速模式读取 ZIP 目录，检查包、年份/月份/周期、成员集合及未完成文件等交付信息；默认包括退市交付物。它不扫描全部分钟数值，不等价于行情质量检查。
+
+增加 `--deep` 才逐字节执行 ZIP CRC 并计算 SHA-256：
 
 ```bash
-kolmo-mdcheck-minute --year 2010 \
+.venv/bin/python -m kolmo.validation.minute_inventory \
+  --start-year 2010 --end-year 2026 --through-month 9 --deep \
+  --output /tmp/minute-inventory-deep.json
+```
+
+## 5. 原始分钟 MDCheck 的实际检查项
+
+源码：[minute_mdcheck.py](../kolmo/validation/minute_mdcheck.py)。默认检查 1m 股票集合，可用 `--symbols` 指定样本，或 `--limit` 限制股票数量。各频率并集与缺少成员列入 archives 信息；逐股票缺少某周期形成 error。
+
+| 检查 | 实际行为 | 严重级别 |
+|---|---|---|
+| 必需列 | 原始必需字段是否存在；不执行生产 Arrow schema 完全相等检查 | error |
+| 空值、标签 | 必需列空值、ts_code 与目标股票、freq 与目标周期是否一致 | error |
+| 时间主键 | 重复时间、升序、上海时区 | error |
+| OHLC | 包络关系和正价格 | error |
+| 量额 | 负量/负额；BJ 15:01–15:30 调整记录例外 | 常规负值 error；允许的盘后负调整 warning |
+| 时段 | 分钟格点合法、秒为 0 | error |
+| 每日根数 | 对已经出现的日期检查期望根数；BJ 按含盘后完整网格计数 | error |
+| 零成交量 | 全天总量为零；所有出现日期都为零量 | 日级 info；全年网格 warning |
+| 供应商跨周期 | 1m 聚合到 5/15/30/60m，与对应供应商文件逐 bar 比较；另比较各周期聚合日线 | 缺失/额外键 error；数值超容差 warning |
+| 独立日线参考 | 1m 按日聚合 OHLC、vol、amount，与 profile/daily_raw 比较；可关闭 | 参考非空时，缺失键 error；数值差异 warning |
+
+与生产入口不同，原始检查的 BJ 根数规则没有“标准 241 根也接受”的分支；例如只有标准时段的 1m BJ 日会因不满 271 根触发 error。
+
+### 跨周期和日线对账的计算与容差
+
+```text
+每日 open   = 第一根 open
+每日 high   = max(high)
+每日 low    = min(low)
+每日 close  = 最后一根 close
+每日 vol    = sum(vol)
+每日 amount = sum(amount)
+```
+
+| 字段 | 允许绝对差 |
+|---|---|
+| OHLC | 0.005 |
+| vol | max(10 股, abs(1m 聚合值) × 1e-8) |
+| amount | max(200 元, abs(1m 聚合值) × 1e-8) |
+
+超过容差记录 warning、差异数量、最大绝对差及一个示例键。以上容差是代码判断标准，不是供应商精度已验证的结论。
+
+日线参考默认位置为 `$KOLMO_DATA_ROOT/profile/daily_raw/{exchange}/YYYY/MM/YYYYMMDD.csv[.gz]`，字段为 `symbol,open,high,low,close,volume,amount`。代码只对 1m 已出现的日期查询参考文件。
+
+**当前缺口：某只股票的日线参考完全为空时，代码直接跳过对账，daily_reference 留为空对象，不报缺参考错误。部分参考存在时才会进行比较并报告缺少的日期。因此“不带 --skip-daily-reference”不等于日线对账一定执行或覆盖完整。**
+
+此外，本入口没有独立交易日历、上市/退市/停牌应有集合，也不做完整统计异常检查；不能从正常日内根数推断整日无缺失。退市嵌套包由单独读取实现支持，当前 `minute_mdcheck` 调用的是正常年/月包 `VendorMinuteDataset`，不要据此宣称已对全部退市输入做逐行验收。
+
+## 6. 使用方式与结果
+
+```bash
+.venv/bin/python -m kolmo.validation.minute_mdcheck \
+  --year 2026 \
   --symbols 000001.SZ 300001.SZ 600000.SH 600519.SH \
-  --skip-daily-reference \
-  --output /tmp/mdcheck-2010-sample.json
+  --daily-root "$HOME/dat/all/profile/daily_raw" \
+  --output /tmp/vendor-minute-mdcheck-2026.json
 ```
 
-2017 年以后可去掉 `--skip-daily-reference`，与已有 `profile/daily_raw` 自动对账。全量扫描时不传 `--symbols`，结果会同时写 JSON 和 findings CSV。
+- 去掉 `--symbols ...`：检查该年份 1m 包中全部股票。
+- `--limit N`：仅检查所选股票排序后的前 N 只，0 为不限。
+- `--root`：原始供应商目录；与生产检查的 history-v1 根目录不同。
+- `--skip-daily-reference`：明确关闭日线参考对账。
+- `--details`：自定义 CSV 路径，默认与 JSON 同名 `.findings.csv`。
+
+JSON 包含 archives、symbol_metrics、findings 和 summary。CSV 字段为
+`symbol,frequency,check,severity,count,total,max_abs_diff,example`。
+summary 中 errors/warnings/info 是 finding 数量，具体受影响行数看 count/total。
+
+**退出码只受 error 影响：error > 0 返回 1，否则返回 0。数值对账差异属于 warning，所以退出码为 0 也可能有行情差异。** 本入口没有 `--fail-on-warning` 参数，验收时必须检查报告内容及日线对账实际覆盖情况。

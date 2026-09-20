@@ -985,101 +985,48 @@ $KOLMO_DATA_ROOT/profile/minute/5m/{raw,qfq,hfq}/{sz,sh}/YYYY/MM/YYYYMMDD.csv.gz
 The 5-minute backfill is intentionally not part of the 18:30 daily scheduler;
 run it independently until the historical archive is complete.
 
-### Vendor Parquet minute archives
+### Produced minute data: build, read, and validate
 
-Annual ZIP files, or a year's monthly ZIP shards, can be queried as one logical
-dataset without extracting the whole archive:
+The existing daily Parquet history is under
+`$KOLMO_DATA_ROOT/staging/minute/history-v1/year=YYYY/profile/minute/v1/`.
+Each file contains one exchange, date, and frequency. Prices are unadjusted;
+`open/high/low/close` describe each bar, not repeated or cumulative daily values.
 
-```bash
-python3 -m kolmo.ashare.vendor_minute \
-  --year 2010 --frequency 5 --symbol 600519.SH
-```
+- [Minute data manual: fields, paths, production scripts, and reading](docs/minute_data_product_design.md)
+- [Production MDCheck: implemented checks, tolerances, and coverage gaps](docs/minute_daily_mdcheck.md)
+- [Raw vendor ZIP reading, inventory, and MDCheck](docs/minute_mdcheck.md)
+- [C++ terminal reader: compilation and CLI arguments](tools/minute_read/README.md)
 
-Run structural, session-grid, cross-frequency, and minute-to-daily checks with:
-
-```bash
-python3 -m kolmo.validation.minute_mdcheck \
-  --year 2010 --symbols 000001.SZ 600000.SH 600519.SH \
-  --skip-daily-reference --output /tmp/mdcheck-2010.json
-```
-
-After building the date-partitioned Parquet history, independently recheck all
-produced years in parallel:
-
-```bash
-caffeinate -i ./scripts/check_vendor_minute_daily.sh \
-  --start-year 2010 --end-year 2026 --workers 4 \
-  --output /tmp/minute-daily-mdcheck.json
-```
-
-This scans the produced Parquet values and metadata, validates daily symbol
-session grids, and recomputes every 5/15/30/60-minute bar from 1-minute data.
-See [`docs/minute_daily_mdcheck.md`](docs/minute_daily_mdcheck.md).
-
-Before row-level checks, inventory package/month completeness. Add `--deep`
-for release-gate ZIP CRC and SHA-256 verification:
-
-```bash
-python3 -m kolmo.validation.minute_inventory \
-  --start-year 2010 --end-year 2026 --through-month 9 \
-  --output /tmp/minute-inventory.json
-```
-
-Build a date-partitioned staging product from authoritative vendor 1-minute
-bars (higher frequencies are derived from 1-minute bars). This command does not
-publish or overwrite the formal profile:
-
-```bash
-./scripts/build_vendor_minute_profile.sh \
-  --year 2026 --start-date 2026-08-01 --end-date 2026-08-31 \
-  --workers 4
-```
-
-The default output is a unique build directory under
-`$KOLMO_DATA_ROOT/staging/minute/`. See the minute product design document for
-the validation and publication gates. The wrapper deliberately uses Kolmo's
-`.venv` interpreter; do not run this job with Apple's Xcode Python.
-
-Validate every Parquet file, manifest totals, and all derived frequencies:
-
-```bash
-./scripts/validate_vendor_minute_profile.sh \
-  --build-root "$KOLMO_DATA_ROOT/staging/minute/<build_id>"
-```
-
-Validation is streaming by daily partition and does not load a full month or
-year into memory. A successful report still does not publish the build.
-
-After the monthly pilot passes, build and validate the complete history one
-year at a time. The runner is resumable and skips years with a matching clean
-validation report:
+Build and validate annual production outputs:
 
 ```bash
 ./scripts/build_vendor_minute_history.sh \
-  --start-year 2010 --end-year 2026 --end-date 2026-09-04 \
-  --workers 4
+  --start-year 2010 --end-year 2026 --end-date 2026-09-04 --workers 4
 ```
 
-Annual outputs are staged under
-`$KOLMO_DATA_ROOT/staging/minute/history-v1/year=YYYY/`. A failure stops before
-the next year and never publishes partial history.
-The wrapper loads `KOLMO_DATA_ROOT` from the project `.env`; normally no
-`--output-root` argument is needed.
-Both build stages use process workers: symbols are decoded into temporary
-daily fragments in parallel, then independent date/exchange partitions are
-merged and derived in parallel. Four workers is the laptop-safe default; raise
-it only after observing memory and storage throughput on a complete year.
-The canonical session is exchange-aware: Beijing Stock Exchange rows from
-15:01 through 15:30 are retained as a separate post-close segment and are
-never merged into the regular 15:00 bar.
+Read produced data directly in the terminal (after compiling the C++ tool):
 
-See [`docs/minute_mdcheck.md`](docs/minute_mdcheck.md) for the data contract,
-test levels, tolerances, and acceptance gates. Keep unaccepted deliveries under
-`raw/vendor_candidate`; the checker does not rewrite source archives.
+```bash
+./build/minute_read/kolmo_minute_read \
+  --date 2026-09-04 --symbol 600519.SH \
+  --start-time 09:30 --end-time 10:00 --limit 20
+```
 
-The proposed canonical schema, daily Parquet layout, production state machine,
-release gates, and pilot plan are documented in
-[`docs/minute_data_product_design.md`](docs/minute_data_product_design.md).
+Audit the existing production history without changing the data:
+
+```bash
+./scripts/check_vendor_minute_daily.sh \
+  --start-year 2010 --end-year 2026 --workers 4 \
+  --output /tmp/production-minute-mdcheck.json
+```
+
+Production MDCheck validates schemas, manifests, row constraints, session counts,
+and derived-frequency consistency. **It does not compare produced minute bars
+against independent daily OHLC/volume/amount, or establish full calendar and
+security-universe coverage.** The raw ZIP checker has a separate daily-reference
+comparison, but skips it when no reference rows are found. Neither a clean
+internal-consistency report nor exit code 0 alone establishes full data accuracy.
+The supplier meaning of the separate 09:30 bar is still unverified.
 
 ## Company Profile Input
 
